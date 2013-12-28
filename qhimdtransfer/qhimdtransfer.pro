@@ -73,6 +73,11 @@ SOURCES += main.cpp \
     qmdtrack.cpp \
     qmddevice.cpp
 win32:SOURCES += qhimdwindetection.cpp
+unix: {
+    HEADERS += qhimdunixdetection.h
+    SOURCES += qhimdunixdetection.cpp
+    QT += dbus
+}
 else:SOURCES += qhimddummydetection.cpp
 RESOURCES += icons.qrc
 PKGCONFIG += sox \
