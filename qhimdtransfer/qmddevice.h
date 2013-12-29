@@ -21,6 +21,7 @@ class QMDDevice : public QObject {
     bool is_busy;
 protected:
     QString device_path;
+    QString device_file;
     enum device_type dev_type;
     bool is_open;
     unsigned int trk_count;
@@ -32,8 +33,10 @@ public:
     explicit QMDDevice();
     virtual ~QMDDevice();
     virtual enum device_type deviceType();
-    virtual void setPath(QString path);
+    virtual void setPath(QString path);    
     virtual QString path();
+    virtual void setDeviceFile(QString file);
+    virtual QString deviceFile();
     virtual void setName(QString name);
     virtual QString name();
     virtual void setBusy(bool busy);

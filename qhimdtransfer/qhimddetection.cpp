@@ -84,6 +84,7 @@ void QHiMDDetection::scan_for_minidisc_devices()
     QHiMDDevice * mddev = new QHiMDDevice();
     mddev->setMdInserted(true);
     mddev->setName("disc image");
+    mddev->setDeviceFile(QString());
     dlist.append(mddev);
     emit deviceListChanged(dlist);
 

@@ -62,6 +62,9 @@ public:
 private:
     QVariant get_property(QString udiskPath, QString property, QString interface);
     QString mountpoint(QString devpath);
+    QMDDevice *find_by_deviceFile(QString file);
+    void add_himddevice(QString file, QString path, QString name);
+    virtual void remove_himddevice(QString file);
 
 public slots:
     void AddMDDevice(QString deviceFile, int vid, int pid);

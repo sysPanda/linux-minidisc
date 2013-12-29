@@ -36,6 +36,17 @@ QString QMDDevice::path()
     return device_path;
 }
 
+void QMDDevice::setDeviceFile(QString file)
+{
+    device_file = file;
+}
+
+QString QMDDevice::deviceFile()
+{
+    return device_file;
+}
+
+
 void QMDDevice::setName(QString name)
 {
     recorder_name = name;
@@ -119,6 +130,7 @@ void QMDDevice::checkfile(QString UploadDirectory, QString &filename, QString ex
 QNetMDDevice::QNetMDDevice()
 {
     dev_type = NETMD_DEVICE;
+    device_file = QString();
     devh = NULL;
     netmd = NULL;
     is_open = false;
@@ -354,6 +366,7 @@ void QNetMDDevice::batchUpload(QMDTrackIndexList tlist, QString path)
 QHiMDDevice::QHiMDDevice()
 {
     dev_type = HIMD_DEVICE;
+    device_file = QString();
     himd = NULL;
     is_open = false;
 }

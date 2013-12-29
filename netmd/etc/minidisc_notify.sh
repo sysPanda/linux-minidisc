@@ -21,5 +21,5 @@ export DISPLAY=:0.0
 vid=$(echo $((0x$ID_VENDOR_ID)))
 pid=$(echo $((0x$ID_MODEL_ID)))
 
-# send message to session bus
-su $username -c "qdbus --session com.trolltech.Qt /QHiMDUnixDetection $ACT $DEVNAME $vid $pid" -m
+# send message to session bus, do not wait for a reply !!! 
+su $username -c "qdbus --session com.trolltech.Qt /QHiMDUnixDetection $ACT $DEVNAME $vid $pid &" -m

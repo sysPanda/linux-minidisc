@@ -1,11 +1,77 @@
 #include "qhimdunixdetection.h"
 #include <QVariantList>
 #include <QDebug>
+#include <QFileDialog>
+#include <QMessageBox>
 #include <QApplication>
 
 QHiMDDetection * createDetection(QObject * parent)
 {
     return new QHiMDUnixDetection(parent);
+}
+
+/* following static functions are stolen from qtdbusutil.cpp, return value of get_property() for the mountpoint is an array of QByteArrays,
+ * cropped unneeded parts, characters and spaces here and changed the output character type from QString::number() to QChar
+ * */
+static bool argToString(const QDBusArgument &busArg, QString &out);
+
+static bool variantToString(const QVariant &arg, QString &out)
+{
+    int argType = arg.userType();
+
+     if (argType == QVariant::ByteArray)
+     {
+        QByteArray list = arg.toByteArray();
+        for (int i = 0; i < list.count(); ++i)
+            out += QChar(list.at(i));
+    }
+    else if (argType == qMetaTypeId<QDBusArgument>())
+     {
+        argToString(qvariant_cast<QDBusArgument>(arg), out);
+     }
+    else if (argType == qMetaTypeId<QDBusVariant>())
+    {
+        const QVariant v = qvariant_cast<QDBusVariant>(arg).variant();
+
+        if (!variantToString(v, out))
+            return false;
+    }
+    return true;
+}
+
+static bool argToString(const QDBusArgument &busArg, QString &out)
+{
+    bool doIterate = false;
+    QDBusArgument::ElementType elementType = busArg.currentType();
+
+    switch (elementType)
+    {
+        case QDBusArgument::BasicType:
+        case QDBusArgument::VariantType:
+            if (!variantToString(busArg.asVariant(), out))
+                return false;
+            break;
+        case QDBusArgument::ArrayType:
+            busArg.beginArray();
+            doIterate = true;
+            break;
+        case QDBusArgument::UnknownType:
+        default:
+            return false;
+    }
+
+    if (doIterate && !busArg.atEnd()) {
+        while (!busArg.atEnd()) {
+            if (!argToString(busArg, out))
+                return false;
+            out += QLatin1String(" , ");
+        }
+        out.chop(3);
+    }
+
+    if(elementType == QDBusArgument::ArrayType)
+        busArg.endArray();
+    return true;
 }
 
 QHiMDUnixDetection::QHiMDUnixDetection(QObject *parent)
@@ -14,12 +80,12 @@ QHiMDUnixDetection::QHiMDUnixDetection(QObject *parent)
     dbus_ses(QDBusConnection::connectToBus(QDBusConnection::SessionBus, "com.trolltech.Qt"))
 {
     if(!dbus_sys.isConnected())
-        qDebug() << "cannot connect to system bus";
+        qDebug() << tr("cannot connect to system bus");
     if(!dbus_ses.isConnected())
-        qDebug() << "cannot connect to session bus";
+        qDebug() << tr("cannot connect to session bus");
 
     if(!dbus_ses.registerObject("/QHiMDUnixDetection", this, QDBusConnection::ExportAllSlots))
-        qDebug() << "cannot register dbus interface object ";
+        qDebug() << tr("cannot register dbus interface object ");
 
     // register interface to session bus to make it visible to all other connections
     dbus_ses.interface()->registerService("com.trolltech.Qt");
@@ -33,7 +99,6 @@ QHiMDUnixDetection::QHiMDUnixDetection(QObject *parent)
 QVariant QHiMDUnixDetection::get_property(QString udiskPath, QString property, QString interface)
 {
     QDBusMessage msg = QDBusMessage::createMethodCall(UDISK_SERVICE, udiskPath, UDISK_PROPERTIES, "Get");
-    QVariant var;
     QList<QVariant> args;
     QDBusMessage reply;
 
@@ -46,29 +111,83 @@ QVariant QHiMDUnixDetection::get_property(QString udiskPath, QString property, Q
     reply = dbus_sys.call(msg);
 
     if (!reply.signature().compare(QString(QChar('v'))) && reply.arguments().length() >0)
-            var = reply.arguments().at(0);
+        return reply.arguments().at(0);
     else
         return QVariant();
-
-    return var;
 }
 
 QString QHiMDUnixDetection::mountpoint(QString devpath)
 {
     QString udev_path = UDISK_DEVICE_PATH;
-    QVariant mp;
+    QVariant ret;
+    QString mp;
 
     // setup correct path for UDisk operations, just need sd* instead fo /dev/sd*
     devpath.remove(0, devpath.lastIndexOf("/")+1);
     udev_path.append(devpath);
 
-    /* TODO: convert return value of get_property() in order to extract needed data, the returned value is marked as INVALID and cannot be converted,
-     * it should contain something like this (this is a sample of what qdbusviewer returns, here: "/media/man2/disk"):
-     *         Arguments: [Variant: [Argument: aay {{47, 109, 101, 100, 105, 97, 47, 109, 97, 110, 50, 47, 100, 105, 115, 107, 0}}]]
-     * so we have to convert the udev "aay" format (array of filepaths) to something readable
+    ret = get_property(udev_path, PROP_MOUNTPATH, UDISK_FILESYSTEM);
+    if(!ret.isValid())
+        return QString();
+
+    /* try to read mountpoint as string
+     * as this is an array of /0 terminatined ByteArrays it returns first mointpoint only because of the terminating /0 character
+     * this is fine for now and matches our needs
      */
-    mp = get_property(udev_path, PROP_MOUNTPATH, UDISK_FILESYSTEM);
-    return mp.toString();
+    if(!variantToString(ret, mp))
+        return QString();
+
+    return mp;
+}
+
+QMDDevice *QHiMDUnixDetection::find_by_deviceFile(QString file)
+{
+    QMDDevice * mddev;
+
+    foreach(mddev, dlist)
+    {
+        if(mddev->deviceFile() == file)
+            return mddev;
+    }
+    return NULL;
+}
+
+void QHiMDUnixDetection::add_himddevice(QString file, QString path, QString name)
+{
+    if (find_by_deviceFile(file))
+        return;
+
+    QHiMDDevice * new_device = new QHiMDDevice();
+
+    new_device->setDeviceFile(file);
+    new_device->setBusy(false);
+    new_device->setPath(path);
+    new_device->setName(name);
+    new_device->setMdInserted(true);
+
+    dlist.append(new_device);
+    emit deviceListChanged(dlist);
+}
+
+void QHiMDUnixDetection::remove_himddevice(QString file)
+{
+    int index = -1;
+    QMDDevice * dev;
+
+    if (!(dev = find_by_deviceFile(file)))
+        return;
+
+    index = dlist.indexOf(dev);
+
+    if(dev->isOpen())
+        dev->close();
+
+    delete dev;
+    dev = NULL;
+
+    dlist.removeAt(index);
+
+    emit deviceListChanged(dlist);
 }
 
 void QHiMDUnixDetection::AddMDDevice(QString deviceFile, int vid, int pid)
@@ -84,8 +203,8 @@ void QHiMDUnixDetection::AddMDDevice(QString deviceFile, int vid, int pid)
      */
     if(name.contains("NetMD"))
     {
-        qDebug() << "qhimdtransfer detection: netmd device detected: " + name;
-        QThread::msleep(5000); // wait for TOC to be loaded by the device, else tracklist may by shown correctly (no tiltles, unknown codec etc.)
+        qDebug() << tr("qhimdtransfer detection: netmd device detected: %1").arg(name);
+        QThread::msleep(5000); // wait for TOC to be loaded by the device, else tracklist may not by shown correctly (no tiltles, unknown codec etc.)
         rescan_netmd_devices();
         return;
     }
@@ -94,23 +213,22 @@ void QHiMDUnixDetection::AddMDDevice(QString deviceFile, int vid, int pid)
     if(!deviceFile.startsWith("/dev/sd"))
         return;
 
+    qDebug() << tr("qhimdtransfer detection: himd device detected at %1: %2").arg(deviceFile).arg(name);
 
-    qDebug() << QString("qhimdtransfer detection: himd device detected at %1: %2").arg(deviceFile).arg(name);
-
-    // wait for device to be mounted by polling for mountpoint, this could take some time
-    // break if mount process did not finish within 30 seconds
-    for(int i = 0; i < 30; i++)
+    // wait for device to be mounted by polling for mountpoint, break if mount process takes too long
+    for(int i = 0; i < 20; i++)
     {
-        QThread::msleep(1000);
-        QApplication::processEvents();  // prevent application to be blocked completely
+        QApplication::processEvents();  // prevent application from beeing blocked
+        QThread::sleep(1);
         if(!(mountpt = mountpoint(deviceFile)).isEmpty())
-                break;
+            break;
     }
-    qDebug() << (mountpt.isEmpty() ? "no mountpoint detected" : QString("device mounted at: %1").arg(mountpt));
 
-    /* TODO: add new QHiMDDevice object to device list here,
-     * as mountpoint() function does not work correctly yet, this cannot be done at current stage of the code
-     */
+    // if mountpoint detection fails return, alternatively ask user to provide mountpoint with a QFileDialog
+    if(mountpt.isEmpty())
+            return;
+
+    add_himddevice(deviceFile,mountpt,name);
 
 }
 
@@ -124,7 +242,7 @@ void QHiMDUnixDetection::RemoveMDDevice(QString deviceFile, int vid, int pid)
 
     if(name.contains("NetMD"))
     {
-        qDebug() << "qhimdtransfer detection: netmd device removed: " + name;
+        qDebug() << tr("qhimdtransfer detection: netmd device removed: ").arg(name);
         rescan_netmd_devices();
         return;
     }
@@ -133,9 +251,8 @@ void QHiMDUnixDetection::RemoveMDDevice(QString deviceFile, int vid, int pid)
     if(!deviceFile.startsWith("/dev/sd"))
         return;
 
-    qDebug() << QString("qhimdtransfer detection: himd device removed at %1: %2").arg(deviceFile).arg(name);
+    qDebug() << tr("qhimdtransfer detection: himd device removed at %1: %2").arg(deviceFile).arg(name);
 
-    /* TODO: remove corresponding QHiMDDevice object from device list here */
-
+    remove_himddevice(deviceFile);
 }
 
