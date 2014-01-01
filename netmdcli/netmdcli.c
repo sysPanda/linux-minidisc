@@ -555,7 +555,7 @@ int main(int argc, char* argv[])
                 puts(netmd_strerror(error));
 
                 /* audio data byte order conversion, .wav files are little endian, need big endian for pcm raw data*/
-                for(i = 0; i < audio_data_size/2; i+=2)
+                for(i = 0; i < audio_data_size; i+=2)
                 {
                     unsigned char first = audio_data[i];
                     audio_data[i] = audio_data[i+1];
