@@ -168,6 +168,26 @@ void retailmac(unsigned char *rootkey, unsigned char *hostnonce,
     gcry_cipher_close(handle2);
 }
 
+static inline unsigned int leword32(const unsigned char * c)
+{
+    return c[3]*16777216+c[2]*65536+c[1]*256+c[0];
+}
+
+static int wav_data_position(const char * data, size_t len)
+{
+    int pos = -1, i = 0;
+    while(pos < 0)
+    {
+        if(i >= len-4) // break at end of data
+            break;
+
+        if(strcmp("data", data+i) == 0)
+            pos = i;
+        i+=2;
+    }
+    return pos;
+}
+
 int main(int argc, char* argv[])
 {
     netmd_dev_handle* devh;
@@ -444,104 +464,140 @@ int main(int argc, char* argv[])
             uint16_t track;
             unsigned char uuid[8] = { 0 };
             unsigned char new_contentid[20] = { 0 };
+            char title[256] = {0};
 
-            error = netmd_secure_leave_session(devh);
-            puts(netmd_strerror(error));
-
-            error = netmd_secure_set_track_protection(devh, 0x01);
-            puts(netmd_strerror(error));
-
-            error = netmd_secure_enter_session(devh);
-            puts(netmd_strerror(error));
-
-            /* build ekb */
-            ekb.id = 0x26422642;
-            ekb.depth = 9;
-            ekb.signature = malloc(sizeof(signature));
-            memcpy(ekb.signature, signature, sizeof(signature));
-
-            /* build ekb key chain */
-            ekb.chain = NULL;
-            for (done = 0; done < sizeof(chain); done+=16U)
-            {
-                next = malloc(sizeof(netmd_keychain));
-                if (ekb.chain == NULL) {
-                    ekb.chain = next;
-                }
-                else {
-                    keychain->next = next;
-                }
-                next->next = NULL;
-
-                next->key = malloc(16);
-                memcpy(next->key, chain + done, 16);
-
-                keychain = next;
-            }
-
-            error = netmd_secure_send_key_data(devh, &ekb);
-            puts(netmd_strerror(error));
-
-            /* cleanup */
-            free(ekb.signature);
-            keychain = ekb.chain;
-            while (keychain != NULL) {
-                next = keychain->next;
-                free(keychain->key);
-                free(keychain);
-                keychain = next;
-            }
-
-            /* exchange nonces */
-            gcry_create_nonce(hostnonce, sizeof(hostnonce));
-            error = netmd_secure_session_key_exchange(devh, hostnonce, devnonce);
-            puts(netmd_strerror(error));
-
-            /* calculate session key */
-            retailmac(rootkey, hostnonce, devnonce, sessionkey);
-
-            error = netmd_secure_setup_download(devh, contentid, kek, sessionkey);
-            puts(netmd_strerror(error));
+            size_t frames;
+            int data_position, audio_data_position, audio_data_size, i, file_valid = 0;
+            unsigned char * audio_data;
+            netmd_wireformat wireformat = NETMD_WIREFORMAT_PCM;
+            unsigned char discformat = NETMD_DISKFORMAT_SP_STEREO;
 
             /* read source */
             stat(argv[2], &stat_buf);
             data_size = (size_t)stat_buf.st_size;
             data = malloc(data_size);
             f = fopen(argv[2], "rb");
-            fseek(f, 60, SEEK_CUR);
-            fread(data, data_size - 60, 1, f);
+            fread(data, data_size, 1, f);
             fclose(f);
-            error = netmd_prepare_packets(data, data_size-60, &packets, &packet_count, kek);
-            puts(netmd_strerror(error));
 
-            /* send to device */
-            error = netmd_secure_send_track(devh, NETMD_WIREFORMAT_LP2,
-                                            NETMD_DISKFORMAT_LP2,
-                                            (data_size - 60) / 192, packets,
-                                            packet_count, sessionkey,
-                                            &track, uuid, new_contentid);
-            puts(netmd_strerror(error));
+            /* TODO: check file for codec, PCM (16 bit, 44100 Hz, stereo) should work correctly*/
+            if((data_position = wav_data_position((char *)data, data_size)) <= 0)
+            {
+                puts("Error: invalid audio file, cannot find data header position");
+                free(data);
+            }
+            else
+            {
+                audio_data_position = data_position+8;
+                audio_data = data+audio_data_position;
+                audio_data_size = leword32(data+(data_position+4));
+                file_valid = 1;
+            }
 
-            /* cleanup */
-            netmd_cleanup_packets(&packets);
+            if(file_valid)
+            {
+                error = netmd_secure_leave_session(devh);
+                puts(netmd_strerror(error));
 
-            /* set title */
-            netmd_log(NETMD_LOG_DEBUG, "New Track: %d\n", track);
-            netmd_cache_toc(devh);
-            netmd_set_title(devh, track, "test");
-            netmd_sync_toc(devh);
+                error = netmd_secure_set_track_protection(devh, 0x01);
+                puts(netmd_strerror(error));
 
-            /* commit track */
-            error = netmd_secure_commit_track(devh, track, sessionkey);
-            puts(netmd_strerror(error));
+                error = netmd_secure_enter_session(devh);
+                puts(netmd_strerror(error));
 
-            /* forget key */
-            error = netmd_secure_session_key_forget(devh);
-            puts(netmd_strerror(error));
+                /* build ekb */
+                ekb.id = 0x26422642;
+                ekb.depth = 9;
+                ekb.signature = malloc(sizeof(signature));
+                memcpy(ekb.signature, signature, sizeof(signature));
 
-            /* leave session */
-            error = netmd_secure_leave_session(devh);
-            puts(netmd_strerror(error));
+                /* build ekb key chain */
+                ekb.chain = NULL;
+                for (done = 0; done < sizeof(chain); done+=16U)
+                {
+                    next = malloc(sizeof(netmd_keychain));
+                    if (ekb.chain == NULL) {
+                        ekb.chain = next;
+                    }
+                    else {
+                        keychain->next = next;
+                        }
+                    next->next = NULL;
+
+                    next->key = malloc(16);
+                    memcpy(next->key, chain + done, 16);
+
+                    keychain = next;
+                }
+
+                error = netmd_secure_send_key_data(devh, &ekb);
+                puts(netmd_strerror(error));
+
+                /* cleanup */
+                free(ekb.signature);
+                keychain = ekb.chain;
+                while (keychain != NULL) {
+                    next = keychain->next;
+                    free(keychain->key);
+                    free(keychain);
+                    keychain = next;
+                }
+
+                /* exchange nonces */
+                gcry_create_nonce(hostnonce, sizeof(hostnonce));
+                error = netmd_secure_session_key_exchange(devh, hostnonce, devnonce);
+                puts(netmd_strerror(error));
+
+                /* calculate session key */
+                retailmac(rootkey, hostnonce, devnonce, sessionkey);
+
+                error = netmd_secure_setup_download(devh, contentid, kek, sessionkey);
+                puts(netmd_strerror(error));
+
+                /* audio data byte order conversion, .wav files are little endian, need big endian for pcm raw data*/
+                for(i = 0; i < audio_data_size/2; i+=2)
+                {
+                    unsigned char first = audio_data[i];
+                    audio_data[i] = audio_data[i+1];
+                    audio_data[i+1] = first;
+                }
+
+                /* netmd_prepare_packets() sets correct number of frames depending on the wire format */
+                error = netmd_prepare_packets(audio_data, audio_data_size, &packets, &packet_count, &frames, kek, wireformat);
+                puts(netmd_strerror(error));
+
+                /* send to device */
+                error = netmd_secure_send_track(devh, wireformat,
+                                                discformat,
+                                                frames, packets,
+                                                packet_count, sessionkey,
+                                                &track, uuid, new_contentid);
+                puts(netmd_strerror(error));
+
+                /* cleanup */
+                netmd_cleanup_packets(&packets);
+                free(data);
+                audio_data = NULL;
+
+                /* set title, use filename */
+                memcpy(title, argv[2], strlen(argv[2])-4);
+                netmd_log(NETMD_LOG_DEBUG, "New Track: %d\n", track);
+                netmd_cache_toc(devh);
+                netmd_set_title(devh, track, title);
+                netmd_sync_toc(devh);
+
+                /* commit track */
+                error = netmd_secure_commit_track(devh, track, sessionkey);
+                puts(netmd_strerror(error));
+
+                /* forget key */
+                error = netmd_secure_session_key_forget(devh);
+                puts(netmd_strerror(error));
+
+                /* leave session */
+                error = netmd_secure_leave_session(devh);
+                puts(netmd_strerror(error));
+            }
         }
         else if(strcmp("help", argv[1]) == 0)
         {
