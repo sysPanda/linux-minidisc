@@ -173,6 +173,11 @@ static inline unsigned int leword32(const unsigned char * c)
     return c[3]*16777216+c[2]*65536+c[1]*256+c[0];
 }
 
+static inline unsigned int leword16(const unsigned char * c)
+{
+    return c[1]*256+c[0];
+}
+
 static int wav_data_position(const char * data, size_t len)
 {
     int pos = -1, i = 0;
@@ -181,11 +186,53 @@ static int wav_data_position(const char * data, size_t len)
         if(i >= len-4) // break at end of data
             break;
 
-        if(strcmp("data", data+i) == 0)
+        if(strncmp("data", data+i, 4) == 0)
             pos = i;
         i+=2;
     }
     return pos;
+}
+
+static int audio_supported(const char * file, netmd_wireformat * wireformat, unsigned int * discformat, int * conversion)
+{
+    if(strncmp("RIFF", file, 4) != 0 || strncmp("WAVE", file+8, 4) != 0 || strncmp("fmt ", file+12, 4) != 0)
+        return 0;    /* no valid WAVE file or fmt chunk missing*/
+
+    if(leword16(file+20) == 1)                                      /* PCM */
+    {
+        *conversion = 1;                                             /* need byte order conversion for pcm raw data*/
+        *wireformat = NETMD_WIREFORMAT_PCM;
+        if(leword32(file+24) != 44100)                               /* sample rate */
+            return 0;
+        if(leword16(file+22) == 1 && leword16(file+34) == 8)         /* mono, 8bit */
+            *discformat = NETMD_DISKFORMAT_SP_MONO;
+        else if(leword16(file+22) == 2 && leword16(file+34) == 16)   /* stereo, 16 bit */
+            *discformat = NETMD_DISKFORMAT_SP_STEREO;
+        else
+            return 0;
+        return 1;
+    }
+
+    if(leword16(file +20) == NETMD_RIFF_FORMAT_TAG_ATRAC3)   /* ATRAC3 */
+    {
+        *conversion = 0;                                     /* byte order conversion not needed */
+        if(leword32(file+24) != 44100)                       /* sample rate */
+            return 0;
+        if(leword16(file+32) == 384)                         /* data block size LP2 */
+        {
+            *wireformat = NETMD_WIREFORMAT_LP2;
+            *discformat = NETMD_DISKFORMAT_LP2;
+        }
+        else if(leword16(file+32) == 192)                    /* data block size LP4 */
+        {
+            *wireformat = NETMD_WIREFORMAT_LP4;
+            *discformat = NETMD_DISKFORMAT_LP4;
+        }
+        else
+            return 0;
+        return 1;
+    }
+    return 0;
 }
 
 int main(int argc, char* argv[])
@@ -467,10 +514,10 @@ int main(int argc, char* argv[])
             char title[256] = {0};
 
             size_t frames;
-            int data_position, audio_data_position, audio_data_size, i, file_valid = 0;
+            int data_position, audio_data_position, audio_data_size, i, need_conversion = 1, file_valid = 0;
             unsigned char * audio_data;
-            netmd_wireformat wireformat = NETMD_WIREFORMAT_PCM;
-            unsigned char discformat = NETMD_DISKFORMAT_SP_STEREO;
+            netmd_wireformat wireformat;
+            unsigned char discformat;
 
             /* read source */
             stat(argv[2], &stat_buf);
@@ -480,18 +527,20 @@ int main(int argc, char* argv[])
             fread(data, data_size, 1, f);
             fclose(f);
 
-            /* TODO: check file for codec, PCM (16 bit, 44100 Hz, stereo) should work correctly*/
-            if((data_position = wav_data_position((char *)data, data_size)) <= 0)
+            file_valid = audio_supported(data, &wireformat, &discformat, &need_conversion);
+            data_position = wav_data_position(data, data_size);
+
+            if(!file_valid || !data_position)
             {
-                puts("Error: invalid audio file, cannot find data header position");
+                puts("Error: audio file not supported");
                 free(data);
+                file_valid = 0;
             }
             else
             {
                 audio_data_position = data_position+8;
                 audio_data = data+audio_data_position;
                 audio_data_size = leword32(data+(data_position+4));
-                file_valid = 1;
             }
 
             if(file_valid)
@@ -554,12 +603,15 @@ int main(int argc, char* argv[])
                 error = netmd_secure_setup_download(devh, contentid, kek, sessionkey);
                 puts(netmd_strerror(error));
 
-                /* audio data byte order conversion, .wav files are little endian, need big endian for pcm raw data*/
-                for(i = 0; i < audio_data_size; i+=2)
+                /* audio data byte order conversion */
+                if(need_conversion)
                 {
-                    unsigned char first = audio_data[i];
-                    audio_data[i] = audio_data[i+1];
-                    audio_data[i+1] = first;
+                    for(i = 0; i < audio_data_size; i+=2)
+                    {
+                        unsigned char first = audio_data[i];
+                        audio_data[i] = audio_data[i+1];
+                        audio_data[i+1] = first;
+                    }
                 }
 
                 /* netmd_prepare_packets() sets correct number of frames depending on the wire format */
