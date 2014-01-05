@@ -3,6 +3,7 @@
 
 #include <QMainWindow>
 #include <QFileDialog>
+#include <QTreeView>
 #include <QtCore/QSettings>
 #include "qhimdaboutdialog.h"
 #include "qhimdformatdialog.h"
@@ -60,6 +61,14 @@ private slots:
     void on_himd_devices_activated(QString device);
     void current_device_closed();
     void on_download_button_clicked();
+    void on_DiscTitle_customContextMenuRequested(const QPoint &pos);
+    void on_TrackList_customContextMenuRequested(const QPoint &pos);
+    void delete_track(QMDTrack *track);
+    void rename_disc();
+    void rename_track(QMDTrack *track);
+    void move_track(QMDTrack *track);
+    void format_disk();
+    void disk_information();
 };
 
 #endif // QHIMDMAINWINDOW_H

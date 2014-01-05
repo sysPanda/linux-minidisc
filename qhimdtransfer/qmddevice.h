@@ -51,12 +51,20 @@ public:
     virtual void * deviceHandle();
     virtual void registerMdChange(void * regMdChange);
     virtual void * MdChange();
-    virtual QMDTrack track(unsigned int trkindex) {return QMDTrack();}
+    virtual QMDTrack *track(unsigned int trkindex) {return NULL;}
     virtual int trackCount() {return trk_count;}
     virtual QStringList downloadableFileExtensions() const;
     virtual void checkfile(QString UploadDirectory, QString &filename, QString extension);
     virtual void batchUpload(QMDTrackIndexList tlist, QString path) {}
     virtual void upload(unsigned int trackidx, QString path) {}
+    virtual void download(QString audiofile, QString title) {}
+    virtual void deleteTrack(unsigned int trkindex);
+    virtual void renameDisk(QString title);
+    virtual void renameTrack(unsigned int trkindex, QString title);
+    virtual void moveTrack(unsigned int trkindex, unsigned int toindex);
+    virtual void readCapacity(QTime *total, QTime *rec, QTime *avail);
+    virtual bool writeProtected() {return true;}
+    virtual void formatDisk();
 
 signals:
     void opened();
@@ -70,6 +78,11 @@ class QNetMDDevice : public QMDDevice {
     minidisc current_md;
 private:
     QString upload_track_blocks(uint32_t length, FILE *file, size_t chunksize);
+    void retailmac(unsigned char *rootkey, unsigned char *hostnonce, unsigned char *devnonce, unsigned char *sessionkey);
+    int wav_data_position(const unsigned char * data, size_t len);
+    bool audio_file_supported(const unsigned char * file, netmd_wireformat * wireformat, unsigned char * discformat, int * conversion);
+    QString prepare_download(netmd_dev_handle * devh, unsigned char * sky);
+    QString recordingFormat();
 public:
     explicit QNetMDDevice();
     virtual ~QNetMDDevice();
@@ -78,8 +91,18 @@ public:
     virtual void close();
     virtual QString discTitle();
     virtual QNetMDTrack netmdTrack(unsigned int trkindex);
+    virtual QMDTrack *track(unsigned int trkindex);
     virtual void batchUpload(QMDTrackIndexList tlist, QString path);
     virtual void upload(unsigned int trackidx, QString path);
+    virtual void download(QString audiofile, QString title);
+    virtual void deleteTrack(unsigned int trkindex);
+    virtual void renameDisk(QString title);
+    virtual void renameTrack(unsigned int trkindex, QString title);
+    virtual void moveTrack(unsigned int trkindex, unsigned int toindex);
+    virtual void readCapacity(QTime *total, QTime *rec, QTime *avail);
+    virtual bool mdInserted();
+    virtual bool writeProtected();
+    virtual void formatDisk();
 
 };
 
@@ -96,6 +119,7 @@ public:
     virtual QString open();
     virtual void close();
     virtual QHiMDTrack himdTrack(unsigned int trkindex);
+    virtual QMDTrack *track(unsigned int trkindex);
     virtual void upload(unsigned int trackidx, QString path);
     virtual void batchUpload(QMDTrackIndexList tlist, QString path);
 

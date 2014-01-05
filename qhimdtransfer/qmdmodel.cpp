@@ -117,7 +117,7 @@ int QNetMDTracksModel::columnCount(const QModelIndex &) const
 QString QNetMDTracksModel::open(QMDDevice * device)
 {
     int i = 0;
-    QString ret = "error opening net device";
+    QString ret = "error opening netmd device";
 
     beginResetModel();
     if(ndev != NULL)
@@ -131,10 +131,12 @@ QString QNetMDTracksModel::open(QMDDevice * device)
 
     if(!ret.isEmpty())
         close();
-
+    else
+    {
     /* fetch track info for all tracks first, getting track info inside data() function is very slow */
     for(; i < ndev->trackCount(); i++)
         allTracks.append(ndev->netmdTrack(i));
+    }
 
     endResetModel();	/* inform views that the model contents changed */
     return ret;

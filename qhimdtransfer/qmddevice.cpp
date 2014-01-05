@@ -1,11 +1,16 @@
 #include <qmddevice.h>
-#include <QMessageBox>
 #include <QApplication>
+#include <QProgressDialog>
+#include <QMessageBox>
 #include <QFile>
+#include <QLayout>
+#include <QDebug>
 #include <tlist.h>
 #include <fileref.h>
 #include <tfile.h>
 #include <tag.h>
+#include <gcrypt.h>
+#include <unistd.h>
 
 extern "C" {
 #include <sox.h>
@@ -100,7 +105,7 @@ void * QMDDevice::MdChange()
 QStringList QMDDevice::downloadableFileExtensions() const
 {
     if(dev_type == NETMD_DEVICE)
-        return QStringList() << "wav";
+        return QStringList() << "wav" << "aea";
 
     if(dev_type == HIMD_DEVICE)
         return QStringList() << "mp3";
@@ -125,6 +130,47 @@ void QMDDevice::checkfile(QString UploadDirectory, QString &filename, QString ex
         filename = newname;
 }
 
+void QMDDevice::deleteTrack(unsigned int trkindex)
+{
+    QMessageBox::information(NULL, tr("Deleting track"),
+                             tr("Deleting tracks not supported yet."),
+                             QMessageBox::Ok);
+}
+
+void QMDDevice::renameDisk(QString title)
+{
+    QMessageBox::information(NULL, tr("Renaming Disk"),
+                             tr("Renaming the Minidisc is not supported yet."),
+                             QMessageBox::Ok);
+}
+
+void QMDDevice::renameTrack(unsigned int trkindex, QString title)
+{
+    QMessageBox::information(NULL, tr("Renaming Track"),
+                             tr("Renaming Minidisc tracks not supported yet."),
+                             QMessageBox::Ok);
+}
+
+void QMDDevice::moveTrack(unsigned int trkindex, unsigned int toindex)
+{
+    QMessageBox::information(NULL, tr("Moving Track"),
+                             tr("Moving Minidisc tracks not supported yet."),
+                             QMessageBox::Ok);
+}
+
+void QMDDevice::readCapacity(QTime *total, QTime *rec, QTime *avail)
+{
+    QMessageBox::information(NULL, tr("Reading disk capacity"),
+                             tr("Reading disk capacity not supported yet."),
+                             QMessageBox::Ok);
+}
+
+void QMDDevice::formatDisk()
+{
+    QMessageBox::information(NULL, tr("Format disk"),
+                             tr("Formating disk not supported yet."),
+                             QMessageBox::Ok);
+}
 
 /* netmd device members */
 QNetMDDevice::QNetMDDevice()
@@ -133,6 +179,7 @@ QNetMDDevice::QNetMDDevice()
     device_file = QString();
     devh = NULL;
     netmd = NULL;
+    trk_count = 0;
     is_open = false;
 }
 
@@ -199,6 +246,11 @@ QNetMDTrack QNetMDDevice::netmdTrack(unsigned int trkindex)
     return QNetMDTrack(devh, disc, trkindex);
 }
 
+QMDTrack *QNetMDDevice::track(unsigned int trkindex)
+{
+    return new QNetMDTrack(devh, &current_md, trkindex);
+}
+
 QString QNetMDDevice::upload_track_blocks(uint32_t length, FILE *file, size_t chunksize)
 {
     /* this is a copy of netmd_secure_real_recv_track(...) function, but updates upload dialog progress bar */
@@ -250,6 +302,12 @@ void QNetMDDevice::upload(unsigned int trackidx, QString path)
     netmd_error error;
     QString filename, errmsg, filepath;
     FILE * file = NULL;
+
+    if(!mdInserted())
+    {
+        errmsg = tr("no disk");
+        goto clean;
+    }
 
     if(name() != "SONY MZ-RH1 (NetMD)")
     {
@@ -361,6 +419,441 @@ void QNetMDDevice::batchUpload(QMDTrackIndexList tlist, QString path)
     setBusy(false);
 }
 
+void QNetMDDevice::retailmac(unsigned char *rootkey, unsigned char *hostnonce,
+               unsigned char *devnonce, unsigned char *sessionkey)
+{
+    gcry_cipher_hd_t handle1;
+    gcry_cipher_hd_t handle2;
+
+    unsigned char des3_key[24] = { 0 };
+    unsigned char iv[8] = { 0 };
+
+    gcry_cipher_open(&handle1, GCRY_CIPHER_DES, GCRY_CIPHER_MODE_ECB, 0);
+    gcry_cipher_setkey(handle1, rootkey, 8);
+    gcry_cipher_encrypt(handle1, iv, 8, hostnonce, 8);
+
+    memcpy(des3_key, rootkey, 16);
+    memcpy(des3_key+16, rootkey, 8);
+    gcry_cipher_open(&handle2, GCRY_CIPHER_3DES, GCRY_CIPHER_MODE_CBC, 0);
+    gcry_cipher_setkey(handle2, des3_key, 24);
+    gcry_cipher_setiv(handle2, iv, 8);
+    gcry_cipher_encrypt(handle2, sessionkey, 8, devnonce, 8);
+
+    gcry_cipher_close(handle1);
+    gcry_cipher_close(handle2);
+}
+
+static inline unsigned int leword32(const unsigned char * c)
+{
+    return c[3]*16777216+c[2]*65536+c[1]*256+c[0];
+}
+
+static inline unsigned int leword16(const unsigned char * c)
+{
+    return c[1]*256+c[0];
+}
+
+int QNetMDDevice::wav_data_position(const unsigned char * data, size_t len)
+{
+    int pos = -1, i = 0;
+    while(pos < 0)
+    {
+        if(i >= len-4) // break at end of data
+            break;
+
+        if(strncmp("data", (char *)data+i, 4) == 0)
+            pos = i;
+        i+=2;
+    }
+    return pos;
+}
+
+bool QNetMDDevice::audio_file_supported(const unsigned char * file, netmd_wireformat * wireformat, unsigned char * discformat, int * conversion)
+{
+    if(strncmp("RIFF", (char *)file, 4) != 0 || strncmp("WAVE", (char *)file+8, 4) != 0 || strncmp("fmt ", (char *)file+12, 4) != 0)
+        return false;    /* no valid WAVE file or fmt chunk missing*/
+
+    if(leword16(file+20) == 1)                                      /* PCM */
+    {
+        *conversion = 1;                                             /* need byte order conversion for pcm raw data*/
+        *wireformat = NETMD_WIREFORMAT_PCM;
+        if(leword32(file+24) != 44100)                               /* sample rate */
+            return false;
+        if(leword16(file+22) == 1 && leword16(file+34) == 8)         /* mono, 8bit */
+            *discformat = NETMD_DISKFORMAT_SP_MONO;
+        else if(leword16(file+22) == 2 && leword16(file+34) == 16)   /* stereo, 16 bit */
+            *discformat = NETMD_DISKFORMAT_SP_STEREO;
+        else
+            return false;
+        return true;
+    }
+
+    if(leword16(file +20) == NETMD_RIFF_FORMAT_TAG_ATRAC3)   /* ATRAC3 */
+    {
+        *conversion = 0;                                     /* byte order conversion not needed */
+        if(leword32(file+24) != 44100)                       /* sample rate */
+            return false;
+        if(leword16(file+32) == 384)                         /* data block size LP2 */
+        {
+            *wireformat = NETMD_WIREFORMAT_LP2;
+            *discformat = NETMD_DISKFORMAT_LP2;
+        }
+        else if(leword16(file+32) == 192)                    /* data block size LP4 */
+        {
+            *wireformat = NETMD_WIREFORMAT_LP4;
+            *discformat = NETMD_DISKFORMAT_LP4;
+        }
+        else
+            return false;
+        return true;
+    }
+    return false;
+}
+
+QString QNetMDDevice::prepare_download(netmd_dev_handle * devh, unsigned char * sky)
+{
+
+    netmd_error error;
+    netmd_ekb ekb;
+    netmd_keychain *keychain;
+    netmd_keychain *next;
+    size_t done;
+    static unsigned char chain[] = {0x25, 0x45, 0x06, 0x4d, 0xea, 0xca,
+                             0x14, 0xf9, 0x96, 0xbd, 0xc8, 0xa4,
+                             0x06, 0xc2, 0x2b, 0x81, 0x49, 0xba,
+                             0xf0, 0xdf, 0x26, 0x9d, 0xb7, 0x1d,
+                             0x49, 0xba, 0xf0, 0xdf, 0x26, 0x9d,
+                             0xb7, 0x1d};
+    static unsigned char signature[] = {0xe8, 0xef, 0x73, 0x45, 0x8d, 0x5b,
+                                 0x8b, 0xf8, 0xe8, 0xef, 0x73, 0x45,
+                                 0x8d, 0x5b, 0x8b, 0xf8, 0x38, 0x5b,
+                                 0x49, 0x36, 0x7b, 0x42, 0x0c, 0x58};
+    static unsigned char rootkey[] = {0x13, 0x37, 0x13, 0x37, 0x13, 0x37,
+                               0x13, 0x37, 0x13, 0x37, 0x13, 0x37,
+                               0x13, 0x37, 0x13, 0x37};
+    static unsigned char hostnonce[8] = { 0 };
+    static unsigned char devnonce[8] = { 0 };
+
+    if((error = netmd_secure_leave_session(devh)) != NETMD_NO_ERROR)
+        return tr("netmd_secure_leave_session: %1").arg(netmd_strerror(error));
+
+    if((error = netmd_secure_set_track_protection(devh, 0x01)) != NETMD_NO_ERROR)
+        return tr("netmd_secure_set_track_protection: %1").arg(netmd_strerror(error));
+
+    if((error = netmd_secure_enter_session(devh)) != NETMD_NO_ERROR)
+        return tr("netmd_secure_enter_session: %1").arg(netmd_strerror(error));
+
+    /* build ekb */
+    ekb.id = 0x26422642;
+    ekb.depth = 9;
+    ekb.signature = (char *)malloc(sizeof(signature));
+    memcpy(ekb.signature, signature, sizeof(signature));
+
+    /* build ekb key chain */
+    ekb.chain = NULL;
+    for (done = 0; done < sizeof(chain); done+=16U)
+    {
+        next = (netmd_keychain *)malloc(sizeof(netmd_keychain));
+        if (ekb.chain == NULL) {
+            ekb.chain = next;
+        }
+        else {
+            keychain->next = next;
+        }
+        next->next = NULL;
+
+        next->key = (char *)malloc(16);
+        memcpy(next->key, chain + done, 16);
+
+        keychain = next;
+    }
+
+    if((error = netmd_secure_send_key_data(devh, &ekb)) != NETMD_NO_ERROR)
+        return tr("netmd_secure_send_key_data: %1").arg(netmd_strerror(error));
+
+    /* cleanup */
+    free(ekb.signature);
+    keychain = ekb.chain;
+    while (keychain != NULL) {
+        next = keychain->next;
+        free(keychain->key);
+        free(keychain);
+        keychain = next;
+    }
+
+    /* exchange nonces */
+    gcry_create_nonce(hostnonce, sizeof(hostnonce));
+
+    if((error = netmd_secure_session_key_exchange(devh, hostnonce, devnonce)) != NETMD_NO_ERROR)
+        return tr("netmd_secure_session_key_exchange: %1").arg(netmd_strerror(error));
+
+    /* calculate session key */
+    retailmac(rootkey, hostnonce, devnonce, sky);
+
+    return QString();
+}
+
+void QNetMDDevice::download(QString audiofile, QString title)
+{
+    /* as chunk size in the netmd_packet(s) is very large, progress bar is not really usable,
+     * just inform the user with a message box
+     */
+
+    QMessageBox downloadBox;
+    QByteArray  ti = title.toLocal8Bit();
+    QString err;
+    netmd_error error;
+    static unsigned char sessionkey[8] = { 0 };
+    static unsigned char kek[] = { 0x14, 0xe3, 0x83, 0x4e, 0xe2, 0xd3, 0xcc, 0xa5 };
+    static unsigned char contentid[] = { 0x01, 0x0F, 0x50, 0x00, 0x00, 0x04,
+                                  0x00, 0x00, 0x00, 0x48, 0xA2, 0x8D,
+                                  0x3E, 0x1A, 0x3B, 0x0C, 0x44, 0xAF,
+                                  0x2f, 0xa0 };
+
+    netmd_track_packets *packets = NULL;
+    size_t packet_count = 0;
+    unsigned char *data;
+    size_t data_size;
+    QFile f(audiofile);
+
+    uint16_t track;
+    unsigned char uuid[8] = { 0 };
+    unsigned char new_contentid[20] = { 0 };
+
+    size_t frames;
+    int data_position, audio_data_size, need_conversion = 1, file_valid = 0;
+    unsigned char * audio_data;
+    netmd_wireformat wireformat;
+    unsigned char discformat;
+
+    downloadBox.setWindowTitle(tr("Downloading file to %1").arg(name()));
+    downloadBox.setText(tr("Please wait while transferring audio file\n%1").arg(audiofile));
+    downloadBox.removeButton(downloadBox.button(QMessageBox::Ok));
+    downloadBox.show();
+    QApplication::processEvents();
+
+    if(!(f.open(QIODevice::ReadOnly)))
+    {
+        err = tr("Error:\ncannot open audio file %1").arg(audiofile);
+        goto clean;
+    }
+
+    if(!mdInserted())
+    {
+        err = tr("Error:\nno disk");
+        goto clean;
+    }
+
+    if(writeProtected())
+    {
+        err = tr("Error:\ndisk is write protected");
+        goto clean;
+    }
+
+    /* read source */
+    data_size = f.size();
+    data = (unsigned char *)malloc(data_size);
+    if(f.read((char*)data, data_size) != data_size)
+        err = tr("Error:\ncannot read audio file");
+    f.close();
+    if(!err.isEmpty())
+        goto clean;
+
+    file_valid = audio_file_supported(data, &wireformat, &discformat, &need_conversion);
+    data_position = wav_data_position(data, data_size);
+
+    if(!file_valid || !data_position)
+    {
+        err = tr("Error:\naudio file not supported");
+        free(data);
+        goto clean;
+    }
+    else
+    {
+        audio_data = data+data_position+8;
+        audio_data_size = leword32(audio_data-4);
+    }
+
+
+
+    QApplication::processEvents();
+
+    /* byte order conversion if needed*/
+    if(need_conversion)
+    {
+        for(int i = 0; i < audio_data_size/2; i+=2)
+        {
+            unsigned char first = audio_data[i];
+            audio_data[i] = audio_data[i+1];
+            audio_data[i+1] = first;
+        }
+    }
+
+    /* call prcessEvents() periodically to show up message box correctly */
+    QApplication::processEvents();
+
+    if(!(err = prepare_download(devh, sessionkey)).isEmpty())
+    {
+        err = tr("Error:\n%1").arg(err);
+        goto clean;
+    }
+
+    QApplication::processEvents();
+
+    if(!(error = netmd_secure_setup_download(devh, contentid, kek, sessionkey)) == NETMD_NO_ERROR)
+    {
+        err = tr("Error:\nnetmd_secure_setup_download: %1").arg(netmd_strerror(error));
+        goto clean;
+    }
+
+    QApplication::processEvents();
+
+    if(!(error = netmd_prepare_packets(audio_data, audio_data_size, &packets, &packet_count, &frames, kek, wireformat)) == NETMD_NO_ERROR)
+    {
+        err = tr("Error:\nnetmd_prepare_packets: %1").arg(netmd_strerror(error));
+        netmd_cleanup_packets(&packets);
+        goto clean;
+    }
+
+    /* free audio data */
+    free(data);
+    audio_data = NULL;
+
+    QApplication::processEvents();
+
+    error = netmd_secure_send_track(devh, wireformat,
+                                    discformat,
+                                    frames, packets,
+                                    packet_count, sessionkey,
+                                    &track, uuid, new_contentid);
+    /* cleanup */
+    netmd_cleanup_packets(&packets);
+
+    if(error != NETMD_NO_ERROR)
+    {
+        err = tr("Error:\nnetmd_secure_send_track: %1").arg(netmd_strerror(error));
+        goto clean;
+    }
+
+    /* set title */
+    netmd_cache_toc(devh);
+    netmd_set_title(devh, track, ti.data());
+    netmd_sync_toc(devh);
+
+    /* commit track */
+    if((error = netmd_secure_commit_track(devh, track, sessionkey)) != NETMD_NO_ERROR)
+        err = tr("Error:\nnetmd_secure_commit_track: %1").arg(netmd_strerror(error));
+
+clean:
+    /* forget key */
+    netmd_secure_session_key_forget(devh);
+    /* leave session */
+    netmd_secure_leave_session(devh);
+
+    if(err.isEmpty())
+        err = tr("Download finished.\n\nsuccessfully transferred audio file\n   %1\nto disk at track number %2").arg(audiofile).arg(track+1);
+    downloadBox.close();
+    downloadBox.setText(err);
+    downloadBox.exec();
+}
+
+void QNetMDDevice::deleteTrack(unsigned int trkindex)
+{
+    netmd_delete_track(devh, trkindex & 0xffff);
+}
+
+void QNetMDDevice::renameDisk(QString title)
+{
+    QByteArray  ti = title.toLocal8Bit();
+
+    netmd_cache_toc(devh);
+    netmd_set_disc_title(devh, ti.data(), strlen(ti.data()));
+    netmd_sync_toc(devh);
+}
+
+void QNetMDDevice::renameTrack(unsigned int trkindex, QString title)
+{
+    QByteArray  ti = title.toLocal8Bit();
+
+    netmd_cache_toc(devh);
+    netmd_set_title(devh, trkindex & 0xffff, ti.data());
+    netmd_sync_toc(devh);
+}
+
+void QNetMDDevice::moveTrack(unsigned int trkindex, unsigned int toindex)
+{
+    netmd_move_track(devh, trkindex & 0xffff, toindex & 0xffff);
+}
+
+void QNetMDDevice::readCapacity(QTime *total, QTime *rec, QTime *avail)
+{
+    netmd_disc_capacity capacity;
+    netmd_get_disc_capacity(devh, &capacity);
+
+    total->setHMS(capacity.total.hour, capacity.total.minute, capacity.total.second);
+    rec->setHMS(capacity.recorded.hour, capacity.recorded.minute, capacity.recorded.second);
+    avail->setHMS(capacity.available.hour, capacity.available.minute, capacity.available.second);
+}
+
+bool QNetMDDevice::mdInserted()
+{
+    QString str;
+    unsigned char status[20] = {0x00, 0x18, 0x09, 0x80, 0x01, 0x02, 0x30, 0x88, 0x00, 0x00, 0x30, 0x88, 0x04, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00};
+    unsigned char rsp[30] = { 0x00};
+
+    netmd_exch_message(devh, status, 20, rsp);
+
+    md_inserted = rsp[26] == 0x40;
+    return md_inserted;
+}
+
+bool QNetMDDevice::writeProtected()
+{
+    unsigned char disc_flags[13] = {0x00, 0x18, 0x06, 0x01, 0x10, 0x10, 0x00, 0xff, 0x00, 0x00, 0x01, 0x00, 0x0b};
+    unsigned char rsp[15] = { 0x00};
+
+    netmd_exch_message(devh, disc_flags, 13, rsp);
+
+    if(rsp[13] == NETMD_DISC_FLAG_WRITABLE)
+        return false;
+
+    return true;
+}
+
+QString QNetMDDevice::recordingFormat()
+{
+    unsigned char rec_param[24] = {0x00, 0x18, 0x09, 0x80, 0x01, 0x03, 0x30, 0x88, 0x01, 0x00, 0x30, 0x88, 0x05, 0x00, 0x30, 0x88, 0x07,
+                                    0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00};
+    unsigned char rsp[255] = {0x00};
+
+    netmd_exch_message(devh, rec_param, 24, rsp);
+
+    if(rsp[34] == NETMD_ENCODING_SP)
+    {
+        if(rsp[35] == NETMD_CHANNELS_MONO)
+            return "Atrac SP Mono";
+        if(rsp[35] == NETMD_CHANNELS_STEREO)
+            return "Atrac SP Stereo";
+    }
+    else if(rsp[34] == NETMD_ENCODING_LP2)
+        return "Atrac3 LP2";
+    else if(rsp[34] == NETMD_ENCODING_LP4)
+        return "Atrac3 LP4";
+
+    return "unknown recording format";
+}
+
+void QNetMDDevice::formatDisk()
+{
+    unsigned char rec_param[6] = {0x00, 0x18, 0x40, 0xff, 0x00, 0x00};
+    unsigned char rsp[255] = {0x00};  //37: 33 + 34
+
+    if(writeProtected())
+        return;
+
+    netmd_exch_message(devh, rec_param, 23, rsp);
+}
+
 /* himd device members */
 
 QHiMDDevice::QHiMDDevice()
@@ -422,6 +915,11 @@ void QHiMDDevice::close()
 QHiMDTrack QHiMDDevice::himdTrack(unsigned int trkindex)
 {
     return QHiMDTrack(himd, trkindex);
+}
+
+QMDTrack * QHiMDDevice::track(unsigned int trkindex)
+{
+    return new QHiMDTrack(himd, trkindex);
 }
 
 QString QHiMDDevice::dumpmp3(const QHiMDTrack &trk, QString file)
@@ -671,3 +1169,4 @@ void QHiMDDevice::batchUpload(QMDTrackIndexList tlist, QString path)
     uploadDialog.finished();
     setBusy(false);
 }
+

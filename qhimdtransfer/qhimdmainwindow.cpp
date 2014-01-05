@@ -2,6 +2,7 @@
 #include "ui_qhimdmainwindow.h"
 #include "qhimdaboutdialog.h"
 #include <QMessageBox>
+#include <QInputDialog>
 #include <QApplication>
 
 void QHiMDMainWindow::set_buttons_enable(bool connect, bool download, bool upload, bool rename, bool del, bool format, bool quit)
@@ -50,7 +51,7 @@ void QHiMDMainWindow::init_local_browser()
     ui->localScan->scrollTo(curdir,QAbstractItemView::PositionAtTop);
     ui->localScan->hideColumn(2);
     ui->localScan->hideColumn(3);
-    ui->localScan->setColumnWidth(0, 350);
+    ui->localScan->setColumnWidth(0, 500);
     QObject::connect(ui->localScan->selectionModel(), SIGNAL(selectionChanged(const QItemSelection &, const QItemSelection &)),
                      this, SLOT(handle_local_selection_change(const QItemSelection&, const QItemSelection&)));
 }
@@ -135,7 +136,7 @@ void QHiMDMainWindow::open_device(QMDDevice * dev)
     QModelIndex curdir = localmodel.index(ui->updir->text());
     ui->localScan->expand(curdir);
     ui->localScan->setCurrentIndex(curdir);
-    ui->DiscTitle->setText(current_device->discTitle());
+    ui->DiscTitle->setText(current_device->trackCount() == 0 ? tr("<blank disc>") : current_device->discTitle());
     set_buttons_enable(1,0,0,1,1,1,1);
 }
 
@@ -161,6 +162,8 @@ QHiMDMainWindow::QHiMDMainWindow(QWidget *parent)
                                          QDir::homePath()).toString());
     set_buttons_enable(1,0,0,0,0,0,1);
     init_local_browser();
+    ui->TrackList->setContextMenuPolicy(Qt::CustomContextMenu);
+    ui->DiscTitle->setContextMenuPolicy(Qt::CustomContextMenu);
     read_window_settings();
     ui->himdpath->hide();   // not needed, replaced by combo box
     if(!autodetect_init())
@@ -346,5 +349,152 @@ void QHiMDMainWindow::current_device_closed()
 
 void QHiMDMainWindow::on_download_button_clicked()
 {
-    /*download_of(localmodel.filePath(ui->localScan->currentIndex()));*/
+    QModelIndex index = ui->localScan->currentIndex();
+    QString title = localmodel.fileInfo(index).baseName();
+    QString path = localmodel.fileInfo(index).absoluteFilePath();
+
+    current_device->download(path, title);
+    open_device(current_device);  //reload tracklist
+}
+
+void QHiMDMainWindow::on_DiscTitle_customContextMenuRequested(const QPoint &pos)
+{
+    QMenu *menu = new QMenu(ui->DiscTitle);
+    QAction * name, * rename, * info, *format, *selection;
+
+    name = menu->addAction(current_device->name());
+    name->setDisabled(true);
+    menu->addSeparator();
+    info = menu->addAction(QIcon(":icons/info.png"), QString("Disc Information"));
+    rename = menu->addAction(QIcon(":icons/rename.png"), QString("Rename Disk"));
+    format = menu->addAction(QIcon(":icons/format.png"), QString("Format Disk"));
+
+    selection = menu->exec(QCursor::pos());
+
+    if(selection == rename)
+        rename_disc();
+    else if(selection == format)
+        format_disk();
+    else if(selection == info)
+        disk_information();
+
+    /* cleanup */
+    delete menu;
+}
+
+void QHiMDMainWindow::on_TrackList_customContextMenuRequested(const QPoint &pos)
+{
+     QMenu *menu = new QMenu(ui->TrackList);
+     QAction * name, * del, * retitle, * move, *selection;
+     QMDTrack * track;
+     QModelIndex index = ui->TrackList->indexAt(pos);
+
+     if(!index.isValid())
+         return;
+
+     ui->TrackList->clearSelection();
+     ui->TrackList->setCurrentIndex(index);
+     track = current_device->track(index.row());
+
+     name = menu->addAction(tr("Track: %1").arg(track->tracknum()+1));
+     name->setDisabled(true);
+     menu->addSeparator();
+     del = menu->addAction(QIcon(":icons/delete.png"), QString("Delete Track"));
+     retitle = menu->addAction(QIcon(":icons/rename.png"), QString("Rename Track"));
+     move = menu->addAction(QString("Move Track"));
+
+     selection = menu->exec(QCursor::pos());
+
+     if(selection == del)
+         delete_track(track);
+     else if(selection == retitle)
+         rename_track(track);
+     else if(selection == move)
+         move_track(track);
+
+     /* cleanup */
+     delete track;
+     delete menu;
+}
+
+void QHiMDMainWindow::delete_track(QMDTrack * track)
+{
+    int ret;
+    ret =  QMessageBox::warning(this, tr("%1: Deleting Track").arg(current_device->name()),
+                                 tr("Are you sure you want to delete track: %1 - %2").arg(track->tracknum()+1).arg(track->title()),
+                                 QMessageBox::Ok,
+                                 QMessageBox::Cancel);
+    if(ret == QMessageBox::Ok)
+        current_device->deleteTrack(track->tracknum());
+
+    open_device(current_device);  //reload tracklist
+}
+
+void QHiMDMainWindow::rename_disc()
+{
+    QString text;
+    text = QInputDialog::getText(this, tr("Renaming the disc"),
+                                 tr("Please edit the disk title"),
+                                 QLineEdit::Normal,
+                                 current_device->discTitle());
+    if(text.isEmpty())
+        return;
+
+    current_device->renameDisk(text);
+    open_device(current_device);
+}
+
+void QHiMDMainWindow::rename_track(QMDTrack * track)
+{
+    QMDTracksModel * mod = (QMDTracksModel *)ui->TrackList->model();
+    QString text;
+    text = QInputDialog::getText(this, tr("Renaming track no. %1").arg(track->tracknum()+1),
+                                 tr("Please edit the track title for track no. %1").arg(track->tracknum()+1),
+                                 QLineEdit::Normal,
+                                 track->title());
+    if(text.isEmpty())
+        return;
+
+    current_device->renameTrack(track->tracknum(), text);
+    open_device(current_device);
+    ui->TrackList->setCurrentIndex(mod->index(track->tracknum()));
+}
+
+void QHiMDMainWindow::move_track(QMDTrack *track)
+{
+    QMDTracksModel * mod = (QMDTracksModel *)ui->TrackList->model();
+    bool ok = false;
+    int toTrack;
+    toTrack = QInputDialog::getInt(this, tr("Move track no. %1").arg(track->tracknum()+1),
+                                   tr("Please choose new track number"),
+                                   track->tracknum()+1,
+                                   1,
+                                   current_device->trackCount(),
+                                   1,
+                                   &ok);
+    if(!ok)
+        return;
+
+    current_device->moveTrack(track->tracknum(), toTrack-1);
+    open_device(current_device);
+    ui->TrackList->setCurrentIndex(mod->index(toTrack-1));
+}
+
+void QHiMDMainWindow::format_disk()
+{
+    int ret;
+    ret =  QMessageBox::warning(this, tr("%1: Formating Disk").arg(current_device->name()),
+                                 tr("<br>Really format the disk in %1 ?<br><br>").arg(current_device->name()) +
+                                 tr("<b>All tracks on the disk will be erased !</b>"),
+                                 QMessageBox::Ok,
+                                 QMessageBox::Cancel);
+    if(ret == QMessageBox::Ok)
+        current_device->formatDisk();
+
+    open_device(current_device);  //reload tracklist
+}
+
+void QHiMDMainWindow::disk_information()
+{
+    /* TODO: read information from device and show them */
 }
