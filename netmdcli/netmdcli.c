@@ -437,9 +437,7 @@ int main(int argc, char* argv[])
                                           0x2f, 0xa0 };
             netmd_track_packets *packets = NULL;
             size_t packet_count = 0;
-            struct stat stat_buf;
-            unsigned char *data;
-            size_t data_size;
+            netmd_wave_track trk;
 
             uint16_t track;
             unsigned char uuid[8] = { 0 };
@@ -503,27 +501,43 @@ int main(int argc, char* argv[])
             error = netmd_secure_setup_download(devh, contentid, kek, sessionkey);
             puts(netmd_strerror(error));
 
-            /* read source */
-            stat(argv[2], &stat_buf);
-            data_size = (size_t)stat_buf.st_size;
-            data = malloc(data_size);
-            f = fopen(argv[2], "rb");
-            fseek(f, 60, SEEK_CUR);
-            fread(data, data_size - 60, 1, f);
-            fclose(f);
-            error = netmd_prepare_packets(data, data_size-60, &packets, &packet_count, kek);
+            /* read audio format, set disk- and wireformat correctly and check if byte order conversion is needed */
+            error = netmd_wave_track_init(argv[2], &trk);
+            if(error != NETMD_NO_ERROR)
+            {
+                puts(netmd_strerror(error));
+                netmd_clean_disc_info(md);
+                netmd_close(devh);
+                netmd_clean(&device_list);
+                return 0;
+            }
+
+            /* byte order conversion, if needed */
+            if(trk.bo_conv)
+            {
+                for(i = 0; i < trk.audiosize; i+=2)
+                {
+                    unsigned char first = trk.rawdata[i];
+                    trk.rawdata[i] = trk.rawdata[i+1];
+                    trk.rawdata[i+1] = first;
+                }
+            }
+
+            /* prepare packets, recieve number of frames stored in the packet(s) depending on the wireformat */
+            error = netmd_prepare_packets(&trk, &packets, &packet_count, kek);
             puts(netmd_strerror(error));
 
             /* send to device */
-            error = netmd_secure_send_track(devh, NETMD_WIREFORMAT_LP2,
-                                            NETMD_DISKFORMAT_LP2,
-                                            (data_size - 60) / 192, packets,
+            error = netmd_secure_send_track(devh, trk.wireformat,
+                                            trk.diskformat,
+                                            trk.frames, packets,
                                             packet_count, sessionkey,
                                             &track, uuid, new_contentid);
             puts(netmd_strerror(error));
 
             /* cleanup */
             netmd_cleanup_packets(&packets);
+            netmd_wave_track_free(&trk);
 
             /* set title */
             netmd_log(NETMD_LOG_DEBUG, "New Track: %d\n", track);
