@@ -38,7 +38,11 @@ static struct error_description const descriptions[] = {
     {NETMD_RESPONSE_TO_SHORT, "Response from device is shorter than expected."},
     {NETMD_RESPONSE_NOT_EXPECTED, "Response from device does not match with the expected result."},
 
-    {NETMD_DES_ERROR, "Error during des caluclation."}
+    {NETMD_DES_ERROR, "Error during des caluclation."},
+
+    {NETMD_OUT_OF_MEMORY, "Cannot allocate memory for storing data"},
+    {NETMD_UNSUPPORTED_FILE, "Audio file format not supported"},
+    {NETMD_CORRUPT_FILE, "Audio file is corrupt"}
 };
 
 static char const unknown_error[] = "Unknown Error";

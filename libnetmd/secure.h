@@ -69,6 +69,32 @@ typedef enum {
 } netmd_wireformat;
 
 /**
+   stores all needed information from a wave audio file, used for downloading a track
+*/
+typedef struct netmd_wave_track {
+    /** pointer to audio file data */
+    unsigned char * file;
+
+    /** wireformat to use for download */
+    netmd_wireformat wireformat;
+
+    /** disformat to use for download */
+    unsigned char diskformat;
+
+    /** size of the raw audio data */
+    size_t audiosize;
+
+    /** pointer to the raw audio data inside the file */
+    unsigned char * rawdata;
+
+    /** need of byte order conversion */
+    int bo_conv;
+
+    /** number of frames depending on the wire format */
+    size_t frames;
+} netmd_wave_track;
+
+/**
    Enter a session secured by a root key found in an EKB. The EKB for this
    session has to be download after entering the session.
 */
@@ -189,7 +215,7 @@ netmd_error netmd_secure_get_track_uuid(netmd_dev_handle *dev, uint16_t track,
 netmd_error netmd_secure_delete_track(netmd_dev_handle *dev, uint16_t track,
                                       unsigned char *signature);
 
-netmd_error netmd_prepare_packets(unsigned char* data, size_t data_lenght,
+netmd_error netmd_prepare_packets(netmd_wave_track *track,
                                   netmd_track_packets **packets,
                                   size_t *packet_count,
                                   unsigned char *key_encryption_key);
@@ -198,5 +224,23 @@ void netmd_cleanup_packets(netmd_track_packets **packets);
 
 netmd_error netmd_secure_set_track_protection(netmd_dev_handle *dev,
                                               unsigned char mode);
+
+size_t netmd_get_frame_size(netmd_wireformat wireformat);
+
+/**
+  Read wave audio file to determine audio format and set wireformat and diskformat
+  correctly to use for download
+
+  @param file path of the audio file
+  @param pointer to a netmd_wave_track struct to store the needed data
+*/
+netmd_error netmd_wave_track_init(const char *filepath, netmd_wave_track *track);
+
+/**
+   free the memory allocated by netmd_wave_track_init() function
+
+   @param pointer to a netmd_wave_track to be freed
+*/
+void netmd_wave_track_free(netmd_wave_track *track);
 
 #endif

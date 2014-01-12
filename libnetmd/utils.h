@@ -44,4 +44,7 @@ uint16_t netmd_read_word(netmd_response *response);
 uint32_t netmd_read_doubleword(netmd_response *response);
 uint64_t netmd_read_quadword(netmd_response *response);
 
+unsigned int leword32(const unsigned char * c);
+unsigned int leword16(const unsigned char * c);
+
 #endif

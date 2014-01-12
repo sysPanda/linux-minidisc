@@ -291,3 +291,13 @@ uint64_t netmd_read_quadword(netmd_response *response)
 
     return value;
 }
+
+inline unsigned int leword32(const unsigned char * c)
+{
+    return c[3]*16777216+c[2]*65536+c[1]*256+c[0];
+}
+
+inline unsigned int leword16(const unsigned char * c)
+{
+    return c[1]*256+c[0];
+}

@@ -29,6 +29,7 @@
   These commands are used during check-in/check-out.
 */
 
+#include <sys/stat.h>
 #include <string.h>
 #include <stdio.h>
 #include <libusb.h>
@@ -44,6 +45,21 @@
 
 static const unsigned char secure_header[] = { 0x18, 0x00, 0x08, 0x00, 0x46,
                                                0xf0, 0x03, 0x01, 0x03 };
+
+static int wave_data_position(const unsigned char * data, size_t len)
+{
+    int pos = -1, i = 0;
+    while(pos < 0)
+    {
+        if(i >= len-4) // break at end of data
+            break;
+
+        if(strncmp("data", (char *)data+i, 4) == 0)
+            pos = i;
+        i+=2;
+    }
+    return pos;
+}
 
 void build_request(unsigned char *request, const unsigned char cmd, unsigned char *data, const size_t data_size)
 {
@@ -371,7 +387,8 @@ void netmd_transfer_song_packets(netmd_dev_handle *dev,
         memcpy(buf + 16, p->data, p->length);
 
         /* ... send it */
-        error = libusb_bulk_transfer((libusb_device_handle*)dev, 2, packet, (int)packet_size, &transferred, 10000);
+        /* TIMEOUT may be increased for large tracks */
+        error = libusb_bulk_transfer((libusb_device_handle*)dev, 2, packet, (int)packet_size, &transferred, 80000);
         netmd_log(NETMD_LOG_DEBUG, "%d %d\n", packet_size, error);
 
         /* cleanup */
@@ -385,13 +402,14 @@ void netmd_transfer_song_packets(netmd_dev_handle *dev,
     }
 }
 
-netmd_error netmd_prepare_packets(unsigned char* data, size_t data_lenght,
+netmd_error netmd_prepare_packets(netmd_wave_track *track,
                                   netmd_track_packets **packets,
                                   size_t *packet_count,
                                   unsigned char *key_encryption_key)
 {
     size_t position = 0;
     size_t chunksize = 0xffffffffU;
+    size_t frame_size = netmd_get_frame_size(track->wireformat);
     netmd_track_packets *last = NULL;
     netmd_track_packets *next = NULL;
 
@@ -412,14 +430,14 @@ netmd_error netmd_prepare_packets(unsigned char* data, size_t data_lenght,
     gcry_create_nonce(iv, sizeof(iv));
 
     *packet_count = 0;
-    while (position < data_lenght) {
-        if ((data_lenght - position) < chunksize) {
+    while (position < track->audiosize) {
+        if ((track->audiosize - position) < chunksize) {
             /* limit chunksize for last packet */
-            chunksize = data_lenght - position;
+            chunksize = track->audiosize - position;
         }
-
-        if ((chunksize % 8) != 0) {
-            chunksize = chunksize + 8 - (chunksize % 8);
+        /* do not truncate frames */
+        if ((chunksize % frame_size) != 0) {
+            chunksize = chunksize + frame_size - (chunksize % frame_size);
         }
 
         /* alloc memory */
@@ -447,8 +465,8 @@ netmd_error netmd_prepare_packets(unsigned char* data, size_t data_lenght,
         memcpy(next->iv, iv, 8);
         gcry_cipher_setiv(data_handle, iv, 8);
         gcry_cipher_setkey(data_handle, rand, sizeof(rand));
-        gcry_cipher_encrypt(data_handle, next->data, chunksize, data + position, chunksize);
-        memcpy(iv, data + position - 8, 8);
+        gcry_cipher_encrypt(data_handle, next->data, chunksize, track->rawdata + position, chunksize);
+        memcpy(iv, track->rawdata + position - 8, 8);
 
         /* next packet */
         position = position + chunksize;
@@ -458,6 +476,8 @@ netmd_error netmd_prepare_packets(unsigned char* data, size_t data_lenght,
 
     gcry_cipher_close(key_handle);
     gcry_cipher_close(data_handle);
+
+    track->frames = position/frame_size;
 
     return error;
 }
@@ -818,4 +838,115 @@ netmd_error netmd_secure_set_track_protection(netmd_dev_handle *dev,
     netmd_check_response_bulk(&response, cmd, sizeof(cmd), &error);
 
     return error;
+}
+
+netmd_error netmd_wave_track_init(const char *filepath, netmd_wave_track *track)
+{
+    netmd_error err = NETMD_NO_ERROR;
+    struct stat stat_buf;
+    int data_chunk_position;
+    unsigned char * file = NULL;
+    size_t file_size, data_size, rawdata_size;
+    FILE *f;
+
+    /* read source */
+    stat(filepath, &stat_buf);
+    data_size = (size_t)stat_buf.st_size;
+
+    if(!(file = malloc(data_size)))
+        return NETMD_OUT_OF_MEMORY;
+
+    if(!(f = fopen(filepath, "rb")))
+    {
+        free(file);
+        return NETMD_CORRUPT_FILE;
+    }
+    file_size = fread(file, data_size, 1, f);
+    fclose(f);
+
+    /* check if file could be read completely */
+    if(file_size != 1)
+    {
+        free(file);
+        return NETMD_CORRUPT_FILE;
+    }
+
+    /* check if this is a valid wave audio file */
+    if(strncmp("RIFF", (char *)file, 4) != 0
+            || strncmp("WAVE", (char *)file+8, 4) != 0
+            || strncmp("fmt ", (char *)file+12, 4) != 0)
+    {
+        free(file);
+        return NETMD_UNSUPPORTED_FILE;
+    }
+
+    /* read audio data format */
+    if(leword16(file+20) == 1)                                       /* PCM */
+    {
+        track->bo_conv = 1;                                          /* need byte order conversion for pcm raw data*/
+        track->wireformat = NETMD_WIREFORMAT_PCM;
+        if(leword32(file+24) != 44100)                               /* sample rate */
+            err =  NETMD_UNSUPPORTED_FILE;
+        else if(leword16(file+22) == 1 && leword16(file+34) == 8)    /* mono, 8bit */
+            track->diskformat = NETMD_DISKFORMAT_SP_MONO;
+        else if(leword16(file+22) == 2 && leword16(file+34) == 16)   /* stereo, 16 bit */
+            track->diskformat = NETMD_DISKFORMAT_SP_STEREO;
+        else
+            err =  NETMD_UNSUPPORTED_FILE;
+    }
+    else if(leword16(file +20) == NETMD_RIFF_FORMAT_TAG_ATRAC3)   /* ATRAC3 */
+    {
+        track->bo_conv = 0;                                       /* byte order conversion not needed */
+        if(leword32(file+24) != 44100)                            /* sample rate */
+            err =  NETMD_UNSUPPORTED_FILE;
+        else if(leword16(file+32) == 384)                         /* data block size LP2 */
+        {
+            track->wireformat = NETMD_WIREFORMAT_LP2;
+            track->diskformat = NETMD_DISKFORMAT_LP2;
+        }
+        else if(leword16(file+32) == 192)                         /* data block size LP4 */
+        {
+            track->wireformat = NETMD_WIREFORMAT_LP4;
+            track->diskformat = NETMD_DISKFORMAT_LP4;
+        }
+        else
+            err =  NETMD_UNSUPPORTED_FILE;
+    }
+    else
+        err =  NETMD_UNSUPPORTED_FILE;
+
+    /* return if audio format is not supported */
+    if(err != NETMD_NO_ERROR)
+    {
+        free(file);
+        return NETMD_UNSUPPORTED_FILE;
+    }
+
+    /* search for data chunk */
+    if((data_chunk_position = wave_data_position(file, data_size)) < 0)
+    {
+        free(file);
+        return NETMD_CORRUPT_FILE;
+    }
+
+    /* check if the complete raw audio data is present in the file */
+    rawdata_size = leword32(file+data_chunk_position+4);
+    if(rawdata_size > data_size - (data_chunk_position+8))
+    {
+        free(file);
+        return NETMD_CORRUPT_FILE;
+    }
+
+    track->file = file;
+    track->audiosize = rawdata_size;
+    track->rawdata = file+data_chunk_position+8;
+
+    return NETMD_NO_ERROR;
+}
+
+void netmd_wave_track_free(netmd_wave_track *track)
+{
+    free(track->file);
+    track->file = NULL;
+    track->rawdata = NULL;
 }
