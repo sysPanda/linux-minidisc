@@ -6,6 +6,7 @@
 #include <fileref.h>
 #include <tfile.h>
 #include <tag.h>
+#include <gcrypt.h>
 
 extern "C" {
 #include <sox.h>
@@ -182,9 +183,13 @@ QString QNetMDDevice::discTitle()
 
 QNetMDTrack QNetMDDevice::netmdTrack(unsigned int trkindex)
 {
-    minidisc * disc = &current_md;
+    return QNetMDTrack(devh, &current_md, trkindex);
+}
 
-    return QNetMDTrack(devh, disc, trkindex);
+/* to be freed !*/
+QMDTrack *QNetMDDevice::track(unsigned int trkindex)
+{
+    return new QNetMDTrack(devh, &current_md, trkindex);
 }
 
 QString QNetMDDevice::upload_track_blocks(uint32_t length, FILE *file, size_t chunksize)
@@ -348,6 +353,235 @@ void QNetMDDevice::batchUpload(QMDTrackIndexList tlist, QString path)
     uploadDialog.finished();
     setBusy(false);
 }
+
+void QNetMDDevice::retailmac(unsigned char *rootkey, unsigned char *hostnonce,
+               unsigned char *devnonce, unsigned char *sessionkey)
+{
+    gcry_cipher_hd_t handle1;
+    gcry_cipher_hd_t handle2;
+
+    unsigned char des3_key[24] = { 0 };
+    unsigned char iv[8] = { 0 };
+
+    gcry_cipher_open(&handle1, GCRY_CIPHER_DES, GCRY_CIPHER_MODE_ECB, 0);
+    gcry_cipher_setkey(handle1, rootkey, 8);
+    gcry_cipher_encrypt(handle1, iv, 8, hostnonce, 8);
+
+    memcpy(des3_key, rootkey, 16);
+    memcpy(des3_key+16, rootkey, 8);
+    gcry_cipher_open(&handle2, GCRY_CIPHER_3DES, GCRY_CIPHER_MODE_CBC, 0);
+    gcry_cipher_setkey(handle2, des3_key, 24);
+    gcry_cipher_setiv(handle2, iv, 8);
+    gcry_cipher_encrypt(handle2, sessionkey, 8, devnonce, 8);
+
+    gcry_cipher_close(handle1);
+    gcry_cipher_close(handle2);
+}
+
+/* setting up a secure session until sessionkey generation */
+QString QNetMDDevice::prepare_download(netmd_dev_handle * devh, unsigned char * sky)
+{
+
+    netmd_error error;
+    netmd_ekb ekb;
+    netmd_keychain *keychain;
+    netmd_keychain *next;
+    size_t done;
+    static unsigned char chain[] = {0x25, 0x45, 0x06, 0x4d, 0xea, 0xca,
+                             0x14, 0xf9, 0x96, 0xbd, 0xc8, 0xa4,
+                             0x06, 0xc2, 0x2b, 0x81, 0x49, 0xba,
+                             0xf0, 0xdf, 0x26, 0x9d, 0xb7, 0x1d,
+                             0x49, 0xba, 0xf0, 0xdf, 0x26, 0x9d,
+                             0xb7, 0x1d};
+    static unsigned char signature[] = {0xe8, 0xef, 0x73, 0x45, 0x8d, 0x5b,
+                                 0x8b, 0xf8, 0xe8, 0xef, 0x73, 0x45,
+                                 0x8d, 0x5b, 0x8b, 0xf8, 0x38, 0x5b,
+                                 0x49, 0x36, 0x7b, 0x42, 0x0c, 0x58};
+    static unsigned char rootkey[] = {0x13, 0x37, 0x13, 0x37, 0x13, 0x37,
+                               0x13, 0x37, 0x13, 0x37, 0x13, 0x37,
+                               0x13, 0x37, 0x13, 0x37};
+    static unsigned char hostnonce[8] = { 0 };
+    static unsigned char devnonce[8] = { 0 };
+
+    if((error = netmd_secure_leave_session(devh)) != NETMD_NO_ERROR)
+        return tr("netmd_secure_leave_session: %1").arg(netmd_strerror(error));
+
+    if((error = netmd_secure_set_track_protection(devh, 0x01)) != NETMD_NO_ERROR)
+        return tr("netmd_secure_set_track_protection: %1").arg(netmd_strerror(error));
+
+    if((error = netmd_secure_enter_session(devh)) != NETMD_NO_ERROR)
+        return tr("netmd_secure_enter_session: %1").arg(netmd_strerror(error));
+
+    /* build ekb */
+    ekb.id = 0x26422642;
+    ekb.depth = 9;
+    ekb.signature = (char *)malloc(sizeof(signature));
+    memcpy(ekb.signature, signature, sizeof(signature));
+
+    /* build ekb key chain */
+    ekb.chain = NULL;
+    for (done = 0; done < sizeof(chain); done+=16U)
+    {
+        next = (netmd_keychain *)malloc(sizeof(netmd_keychain));
+        if (ekb.chain == NULL) {
+            ekb.chain = next;
+        }
+        else {
+            keychain->next = next;
+        }
+        next->next = NULL;
+
+        next->key = (char *)malloc(16);
+        memcpy(next->key, chain + done, 16);
+
+        keychain = next;
+    }
+
+    if((error = netmd_secure_send_key_data(devh, &ekb)) != NETMD_NO_ERROR)
+        return tr("netmd_secure_send_key_data: %1").arg(netmd_strerror(error));
+
+    /* cleanup */
+    free(ekb.signature);
+    keychain = ekb.chain;
+    while (keychain != NULL) {
+        next = keychain->next;
+        free(keychain->key);
+        free(keychain);
+        keychain = next;
+    }
+
+    /* exchange nonces */
+    gcry_create_nonce(hostnonce, sizeof(hostnonce));
+
+    if((error = netmd_secure_session_key_exchange(devh, hostnonce, devnonce)) != NETMD_NO_ERROR)
+        return tr("netmd_secure_session_key_exchange: %1").arg(netmd_strerror(error));
+
+    /* calculate session key */
+    retailmac(rootkey, hostnonce, devnonce, sky);
+
+    return QString();
+}
+
+void QNetMDDevice::download(QString audiofile, QString title)
+{
+    /* as chunk size in the netmd_packet(s) is very large, progress bar is not really usable,
+     * just inform the user with a message box for now
+     */
+
+    QMessageBox downloadBox;
+    QString errmsg;
+    netmd_error error;
+    static unsigned char sessionkey[8] = { 0 };
+    static unsigned char kek[] = { 0x14, 0xe3, 0x83, 0x4e, 0xe2, 0xd3, 0xcc, 0xa5 };
+    static unsigned char contentid[] = { 0x01, 0x0F, 0x50, 0x00, 0x00, 0x04,
+                                  0x00, 0x00, 0x00, 0x48, 0xA2, 0x8D,
+                                  0x3E, 0x1A, 0x3B, 0x0C, 0x44, 0xAF,
+                                  0x2f, 0xa0 };
+
+    netmd_track_packets *packets = NULL;
+    size_t packet_count = 0;
+
+    uint16_t track;
+    unsigned char uuid[8] = { 0 };
+    unsigned char new_contentid[20] = { 0 };
+
+    netmd_wave_track trk;
+
+    downloadBox.setWindowTitle(tr("Downloading file to %1").arg(name()));
+    downloadBox.setIconPixmap(QPixmap(":icons/download_to_md.png"));
+    downloadBox.setText(tr("Please wait while transferring audio file\n%1").arg(audiofile));
+    downloadBox.setStandardButtons(0);
+    downloadBox.show();
+    /* call processEvents() periodically to show up message box correctly */
+    QApplication::processEvents();
+
+    /* read audio file and set wireformat, diskformat and byteorder conversion correctly*/
+    if((error = netmd_wave_track_init(audiofile.toUtf8(), &trk)) != NETMD_NO_ERROR)
+    {
+        errmsg = tr("Error:\nnetmd_wave_track_init: %1").arg(netmd_strerror(error));
+        goto clean;
+    }
+    QApplication::processEvents();
+
+    /* byte order conversion if needed*/
+    if(trk.bo_conv)
+    {
+        for(unsigned int i = 0; i < trk.audiosize; i+=2)
+        {
+            unsigned char first = trk.rawdata[i];
+            trk.rawdata[i] = trk.rawdata[i+1];
+            trk.rawdata[i+1] = first;
+        }
+    }
+    QApplication::processEvents();
+
+    /* init a secure session */
+    if(!(errmsg = prepare_download(devh, sessionkey)).isEmpty())
+    {
+        errmsg = tr("Error:\n%1").arg(errmsg);
+        netmd_wave_track_free(&trk);
+        goto clean;
+    }
+    QApplication::processEvents();
+
+    /* prepare download operation*/
+    if((error = netmd_secure_setup_download(devh, contentid, kek, sessionkey)) != NETMD_NO_ERROR)
+    {
+        errmsg = tr("Error:\nnetmd_secure_setup_download: %1").arg(netmd_strerror(error));
+        netmd_wave_track_free(&trk);
+        goto clean;
+    }
+    QApplication::processEvents();
+
+    /* setup data packet(s) and get number of frames stored in the packet(s)*/
+    if((error = netmd_prepare_packets(&trk, &packets, &packet_count, kek)) != NETMD_NO_ERROR)
+    {
+        errmsg = tr("Error:\nnetmd_prepare_packets: %1").arg(netmd_strerror(error));
+        netmd_cleanup_packets(&packets);
+        netmd_wave_track_free(&trk);
+        goto clean;
+    }
+    QApplication::processEvents();
+
+    /* send track to device*/
+    error = netmd_secure_send_track(devh, trk.wireformat,
+                                    trk.diskformat,
+                                    trk.frames, packets,
+                                    packet_count, sessionkey,
+                                    &track, uuid, new_contentid);
+    /* cleanup */
+    netmd_cleanup_packets(&packets);
+    netmd_wave_track_free(&trk);
+
+    if(error != NETMD_NO_ERROR)
+    {
+        errmsg = tr("Error:\nnetmd_secure_send_track: %1").arg(netmd_strerror(error));
+        goto clean;
+    }
+
+    /* set title */
+    netmd_cache_toc(devh);
+    netmd_set_title(devh, track, title.toUtf8());
+    netmd_sync_toc(devh);
+
+    /* commit track */
+    if((error = netmd_secure_commit_track(devh, track, sessionkey)) != NETMD_NO_ERROR)
+        errmsg = tr("Error:\nnetmd_secure_commit_track: %1").arg(netmd_strerror(error));
+
+clean:
+    /* forget key */
+    netmd_secure_session_key_forget(devh);
+    /* leave session */
+    netmd_secure_leave_session(devh);
+
+    if(errmsg.isEmpty())
+        errmsg = tr("Download finished.\n\nsuccessfully transferred audio file\n   %1\nto disk at track number %2").arg(audiofile).arg(track+1);
+    downloadBox.close();
+    downloadBox.setText(errmsg);
+    downloadBox.setStandardButtons(QMessageBox::Ok);
+    downloadBox.exec();
+}
+
 
 /* himd device members */
 

@@ -48,12 +48,13 @@ public:
     virtual void * deviceHandle();
     virtual void registerMdChange(void * regMdChange);
     virtual void * MdChange();
-    virtual QMDTrack track(unsigned int trkindex) {return QMDTrack();}
+    virtual QMDTrack *track(unsigned int trkindex) {return NULL;}
     virtual int trackCount() {return trk_count;}
     virtual QStringList downloadableFileExtensions() const;
     virtual void checkfile(QString UploadDirectory, QString &filename, QString extension);
     virtual void batchUpload(QMDTrackIndexList tlist, QString path) {}
     virtual void upload(unsigned int trackidx, QString path) {}
+    virtual void download(QString audiofile, QString title) {}
 
 signals:
     void opened();
@@ -67,6 +68,9 @@ class QNetMDDevice : public QMDDevice {
     minidisc current_md;
 private:
     QString upload_track_blocks(uint32_t length, FILE *file, size_t chunksize);
+    void retailmac(unsigned char *rootkey, unsigned char *hostnonce, unsigned char *devnonce, unsigned char *sessionkey);
+    QString prepare_download(netmd_dev_handle * devh, unsigned char * sky);
+
 public:
     explicit QNetMDDevice();
     virtual ~QNetMDDevice();
@@ -75,9 +79,11 @@ public:
     virtual void close();
     virtual QString discTitle();
     virtual QNetMDTrack netmdTrack(unsigned int trkindex);
+    /* returns a pointer to a new QMDTrack object, this has to be freed */
+    virtual QMDTrack *track(unsigned int trkindex);
     virtual void batchUpload(QMDTrackIndexList tlist, QString path);
     virtual void upload(unsigned int trackidx, QString path);
-
+    virtual void download(QString audiofile, QString title);
 };
 
 class QHiMDDevice : public QMDDevice {

@@ -346,5 +346,10 @@ void QHiMDMainWindow::current_device_closed()
 
 void QHiMDMainWindow::on_download_button_clicked()
 {
-    /*download_of(localmodel.filePath(ui->localScan->currentIndex()));*/
+    QModelIndex index = ui->localScan->currentIndex();
+    QString title = localmodel.fileInfo(index).baseName();
+    QString path = localmodel.fileInfo(index).absoluteFilePath();
+
+    current_device->download(path, title);
+    open_device(current_device);  //reload tracklist
 }
