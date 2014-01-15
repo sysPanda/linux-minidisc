@@ -2,6 +2,7 @@
 #include <QMessageBox>
 #include <QApplication>
 #include <QFile>
+#include <QDir>
 #include <tlist.h>
 #include <fileref.h>
 #include <tfile.h>
@@ -103,6 +104,9 @@ void QMDDevice::checkfile(QString UploadDirectory, QString &filename, QString ex
     QFile f;
     QString newname;
     int i = 2;
+
+    /* remove chars of directory separator type from filename*/
+    filename.replace(QDir::separator(), " ");
 
     f.setFileName(UploadDirectory + "/" + filename + extension);
     while(f.exists())
