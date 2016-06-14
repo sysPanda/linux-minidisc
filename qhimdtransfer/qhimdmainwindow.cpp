@@ -136,7 +136,7 @@ void QHiMDMainWindow::open_device(QMDDevice * dev)
         if(path.isEmpty())
         {
             ui->statusBar->showMessage(tr("himd device %1 detected. ").arg(dev->name()) +
-                                       tr("Please wait for device to be mounted before opening"));
+                                       tr("Please wait for device to be mounted before reading track list"));
             return;
         }
         ui->statusBar->clearMessage();

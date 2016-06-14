@@ -57,7 +57,13 @@ HEADERS += qhimdaboutdialog.h \
     qmdmodel.h \
     qmdtrack.h \
     qmddevice.h \
-    qhimdmainwindow.h
+    qhimdmainwindow.h \
+    qhimdformatdialog.h \
+    qhimdmodel.h \
+    ui_qhimdaboutdialog.h \
+    ui_qhimdformatdialog.h \
+    ui_qhimdmainwindow.h \
+    ui_qhimduploaddialog.h
 FORMS += qhimdaboutdialog.ui \
     qhimduploaddialog.ui \
     qhimdmainwindow.ui
@@ -68,7 +74,18 @@ SOURCES += main.cpp \
     qhimddetection.cpp \
     qmdmodel.cpp \
     qmdtrack.cpp \
-    qmddevice.cpp
+    qmddevice.cpp \
+    moc_qhimdaboutdialog.cpp \
+    moc_qhimddetection.cpp \
+    moc_qhimdformatdialog.cpp \
+    moc_qhimdmainwindow.cpp \
+    moc_qhimdunixdetection.cpp \
+    moc_qhimduploaddialog.cpp \
+    moc_qmddevice.cpp \
+    moc_qmdmodel.cpp \
+    qhimdformatdialog.cpp \
+    qhimdmodel.cpp \
+    qrc_icons.cpp
 win32:SOURCES += qhimdwindetection.cpp
 unix: {
     HEADERS += qhimdunixdetection.h
