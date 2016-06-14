@@ -5,6 +5,7 @@
 #include <QFile>
 #include <QLayout>
 #include <QDebug>
+#include <QFileDialog>
 #include <tlist.h>
 #include <fileref.h>
 #include <tfile.h>
@@ -872,6 +873,9 @@ QHiMDDevice::~QHiMDDevice()
 QString QHiMDDevice::open()
 {
     struct himderrinfo status;
+
+    if(path().isEmpty())
+        return tr("cannot open device, unknown path");
 
     if(!mdInserted())
         return tr("cannot open device, no disc");

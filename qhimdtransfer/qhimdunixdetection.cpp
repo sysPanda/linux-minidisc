@@ -5,6 +5,16 @@
 #include <QMessageBox>
 #include <QApplication>
 
+#if (QT_MAJOR_VERSION > 4)
+    class Sleeper : public QThread {};
+#else
+/* helper function for QThread::msleep(), this is a protected member in Qt4 */
+class Sleeper : public QThread {
+public:
+   void msleep(int ms) { QThread::msleep(ms); }
+};
+#endif
+
 QHiMDDetection * createDetection(QObject * parent)
 {
     return new QHiMDUnixDetection(parent);
@@ -152,7 +162,7 @@ QMDDevice *QHiMDUnixDetection::find_by_deviceFile(QString file)
     return NULL;
 }
 
-void QHiMDUnixDetection::add_himddevice(QString file, QString path, QString name)
+void QHiMDUnixDetection::add_himddevice(QString file, QString name)
 {
     if (find_by_deviceFile(file))
         return;
@@ -161,9 +171,9 @@ void QHiMDUnixDetection::add_himddevice(QString file, QString path, QString name
 
     new_device->setDeviceFile(file);
     new_device->setBusy(false);
-    new_device->setPath(path);
+    new_device->setPath(QString());
     new_device->setName(name);
-    new_device->setMdInserted(true);
+    new_device->setMdInserted(false);
 
     dlist.append(new_device);
     emit deviceListChanged(dlist);
@@ -192,8 +202,8 @@ void QHiMDUnixDetection::remove_himddevice(QString file)
 
 void QHiMDUnixDetection::AddMDDevice(QString deviceFile, int vid, int pid)
 {
-    QString mountpt;
     QString name = QString(identify_usb_device(vid, pid));
+    Sleeper slp;
 
     // check if this is valid minidisc device depending on vendor and product id, for all known devices identify_usb_device() should return a name
     if(name.isEmpty())
@@ -204,7 +214,7 @@ void QHiMDUnixDetection::AddMDDevice(QString deviceFile, int vid, int pid)
     if(name.contains("NetMD"))
     {
         qDebug() << tr("qhimdtransfer detection: netmd device detected: %1").arg(name);
-        QThread::msleep(5000); // wait for TOC to be loaded by the device, else tracklist may not by shown correctly (no tiltles, unknown codec etc.)
+        slp.msleep(10000); // wait for TOC to be loaded by the device, else tracklist may not by shown correctly (no tiltles, unknown codec etc.)
         rescan_netmd_devices();
         return;
     }
@@ -215,20 +225,11 @@ void QHiMDUnixDetection::AddMDDevice(QString deviceFile, int vid, int pid)
 
     qDebug() << tr("qhimdtransfer detection: himd device detected at %1: %2").arg(deviceFile).arg(name);
 
-    // wait for device to be mounted by polling for mountpoint, break if mount process takes too long
-    for(int i = 0; i < 20; i++)
-    {
-        QApplication::processEvents();  // prevent application from beeing blocked
-        QThread::sleep(1);
-        if(!(mountpt = mountpoint(deviceFile)).isEmpty())
-            break;
-    }
-
-    // if mountpoint detection fails return, alternatively ask user to provide mountpoint with a QFileDialog
+    /* if mountpoint detection fails ask user to provide mountpoint with a QFileDialog
     if(mountpt.isEmpty())
-            return;
+        return;*/
 
-    add_himddevice(deviceFile,mountpt,name);
+    add_himddevice(deviceFile,name);
 
 }
 
@@ -242,7 +243,7 @@ void QHiMDUnixDetection::RemoveMDDevice(QString deviceFile, int vid, int pid)
 
     if(name.contains("NetMD"))
     {
-        qDebug() << tr("qhimdtransfer detection: netmd device removed: ").arg(name);
+        qDebug() << tr("qhimdtransfer detection: netmd device removed: %1").arg(name);
         rescan_netmd_devices();
         return;
     }

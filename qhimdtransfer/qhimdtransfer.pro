@@ -52,20 +52,17 @@ include(translate.pri)
 
 # Input
 HEADERS += qhimdaboutdialog.h \
-    qhimdformatdialog.h \
     qhimduploaddialog.h \
-    qhimdmainwindow.h \
     qhimddetection.h \
     qmdmodel.h \
     qmdtrack.h \
-    qmddevice.h
+    qmddevice.h \
+    qhimdmainwindow.h
 FORMS += qhimdaboutdialog.ui \
-    qhimdformatdialog.ui \
     qhimduploaddialog.ui \
     qhimdmainwindow.ui
 SOURCES += main.cpp \
     qhimdaboutdialog.cpp \
-    qhimdformatdialog.cpp \
     qhimduploaddialog.cpp \
     qhimdmainwindow.cpp \
     qhimddetection.cpp \

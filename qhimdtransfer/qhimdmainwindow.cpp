@@ -49,6 +49,7 @@ void QHiMDMainWindow::init_local_browser()
     ui->localScan->expand(curdir);
     ui->localScan->setCurrentIndex(curdir);
     ui->localScan->scrollTo(curdir,QAbstractItemView::PositionAtTop);
+    ui->localScan->hideColumn(1);
     ui->localScan->hideColumn(2);
     ui->localScan->hideColumn(3);
     ui->localScan->setColumnWidth(0, 500);
@@ -92,10 +93,14 @@ void QHiMDMainWindow::setCurrentDevice(QMDDevice *dev)
 void QHiMDMainWindow::open_device(QMDDevice * dev)
 {
     QMessageBox mdStatus;
-    QString error;
+    QString error, path;
     QMDTracksModel * mod;
+    int index = 0;
 
-    int index = ui->himd_devices->currentIndex();  // remember current index of devices combo box, will be resetted by current_device_closed() function
+    if(dev->name().contains("disc image"))
+        index = ui->himd_devices->findText("disc image");
+    else
+        index = ui->himd_devices->findText(dev->name());  // remember index of device to open, will be resetted by current_device_closed() function
 
     if (!dev)
     {
@@ -110,13 +115,34 @@ void QHiMDMainWindow::open_device(QMDDevice * dev)
         ui->himd_devices->setCurrentIndex(index);  // set correct device index in the combo box
     }
 
+    // ask user to set directory for disk image, if not set
+    if(dev->deviceType() == HIMD_DEVICE && dev->name().contains("disc image") && dev->path().isEmpty())
+    {
+        path = QFileDialog::getExistingDirectory(this,
+                                                 tr("Select directory of HiMD Medium"),
+                                                 path,
+                                                 QFileDialog::ShowDirsOnly
+                                                 | QFileDialog::DontResolveSymlinks);
+        if(path.isEmpty())
+            return;
+        dev->setPath(path);
+        ui->himd_devices->setItemText(index, QString((dev->name() + " at " + dev->path() )));
+    }
+
+    // try to find mountpoint if not set
     if(dev->deviceType() == HIMD_DEVICE && dev->path().isEmpty())
     {
-        mdStatus.setText(tr("Error opening himd device/disc image , no device path given\nPlease use connect button to set the path to the himd device/disc image"));
-        mdStatus.exec();
-        set_buttons_enable(1,0,0,0,0,0,1);
-        ui->himd_devices->setCurrentIndex(0);
-        return;
+        path = detect->mountpoint(dev->deviceFile());
+        if(path.isEmpty())
+        {
+            ui->statusBar->showMessage(tr("himd device %1 detected. ").arg(dev->name()) +
+                                       tr("Please wait for device to be mounted before opening"));
+            return;
+        }
+        ui->statusBar->clearMessage();
+        dev->setPath(path);
+        dev->setMdInserted(true);
+        ui->himd_devices->setCurrentIndex(ui->himd_devices->findText(dev->name()));
     }
 
     setCurrentDevice(dev);
@@ -154,7 +180,6 @@ QHiMDMainWindow::QHiMDMainWindow(QWidget *parent)
     : QMainWindow(parent), ui(new Ui::QHiMDMainWindowClass)
 {
     aboutDialog = new QHiMDAboutDialog;
-    formatDialog = new QHiMDFormatDialog;
     current_device = NULL;
     detect = createDetection(this);
     ui->setupUi(this);
@@ -221,7 +246,7 @@ void QHiMDMainWindow::on_action_About_triggered()
 
 void QHiMDMainWindow::on_action_Format_triggered()
 {
-    formatDialog->show();
+    current_device->formatDisk();
 }
 
 void QHiMDMainWindow::on_action_Connect_triggered()
@@ -269,11 +294,14 @@ void QHiMDMainWindow::handle_local_selection_change(const QItemSelection&, const
     {
         ui->updir->setText(localmodel.filePath(index));
         settings.setValue("lastUploadDirectory", localmodel.filePath(index));
+        ui->localScan->selectionModel()->select(index, QItemSelectionModel::Deselect);
     }
 
     if(localmodel.fileInfo(index).isFile())
+    {
         download_possible = current_device && current_device->isOpen();
-
+        ui->localScan->selectionModel()->select(index, QItemSelectionModel::Select);
+    }
     ui->action_Download->setEnabled(download_possible);
     ui->download_button->setEnabled(download_possible);
 }
@@ -293,7 +321,7 @@ void QHiMDMainWindow::device_list_changed(QMDDevicePtrList dplist)
 
     foreach(dev, dplist)
     {
-        device = QString(dev->deviceType() == NETMD_DEVICE ? dev->name() : dev->name() + " at " + dev->path() );
+        device = QString(dev->name());
         ui->himd_devices->addItem(device, qVariantFromValue((void *)dev));
     }
 
@@ -497,4 +525,23 @@ void QHiMDMainWindow::format_disk()
 void QHiMDMainWindow::disk_information()
 {
     /* TODO: read information from device and show them */
+}
+
+void QHiMDMainWindow::on_reload_clicked()
+{
+    // re open current device, if no device opened open device activated in the combo box
+    if(current_device)
+        open_device(current_device);
+    else
+        open_device((QHiMDDevice *)ui->himd_devices->itemData(ui->himd_devices->currentIndex()).value<void *>());
+}
+
+void QHiMDMainWindow::on_select_all_clicked()
+{
+    ui->TrackList->selectAll();
+}
+
+void QHiMDMainWindow::on_deselect_all_clicked()
+{
+    ui->TrackList->selectionModel()->clearSelection();
 }

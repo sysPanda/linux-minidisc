@@ -6,7 +6,6 @@
 #include <QTreeView>
 #include <QtCore/QSettings>
 #include "qhimdaboutdialog.h"
-#include "qhimdformatdialog.h"
 #include "qhimddetection.h"
 #include "qmdmodel.h"
 
@@ -30,7 +29,6 @@ public:
 private:
     Ui::QHiMDMainWindowClass *ui;
     QHiMDAboutDialog * aboutDialog;
-    QHiMDFormatDialog * formatDialog;
     QHiMDDetection * detect;
     QNetMDTracksModel ntmodel;
     QHiMDTracksModel htmodel;
@@ -69,6 +67,9 @@ private slots:
     void move_track(QMDTrack *track);
     void format_disk();
     void disk_information();
+    void on_reload_clicked();
+    void on_select_all_clicked();
+    void on_deselect_all_clicked();
 };
 
 #endif // QHIMDMAINWINDOW_H
